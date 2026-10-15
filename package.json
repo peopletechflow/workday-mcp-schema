@@ -1,0 +1,36 @@
+{
+  "name": "workday-mcp-schema",
+  "version": "0.1.0",
+  "description": "Permission-safe Workday MCP server: task-shaped tools, per-user OAuth, preview-then-confirm writes.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "workday-mcp-schema": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "workday",
+    "oauth",
+    "hcm"
+  ],
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
