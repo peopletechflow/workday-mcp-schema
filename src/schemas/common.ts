@@ -6,15 +6,27 @@ export const IsoDateSchema = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected ISO date YYYY-MM-DD")
   .describe("ISO calendar date (YYYY-MM-DD)");
 
+/** ISO 8601 timestamp with offset or Z. */
+export const IsoDateTimeSchema = z.string().datetime({ offset: true }).describe("ISO 8601 timestamp");
+
 export const WorkdayIdTypeSchema = z.enum([
   "WID",
   "Employee_ID",
   "Contingent_Worker_ID",
+  "Position_ID",
+  "Organization_Reference_ID",
+  "Supervisory_Organization_ID",
+  "Cost_Center_Reference_ID",
+  "Location_ID",
+  "Job_Profile_ID",
+  "Benefit_Plan_ID",
+  "Pay_Group_ID",
+  "Pay_Statement_ID",
   "Absence_Table_ID",
   "Time_Off_Type_ID",
   "Time_Off_Entry_ID",
+  "Business_Process_Event_ID",
 ]);
-
 export type WorkdayIdType = z.infer<typeof WorkdayIdTypeSchema>;
 
 /** Typed Workday identifier: type + value, never a bare opaque string in tool inputs. */
@@ -24,8 +36,35 @@ export const WorkdayIdSchema = z
     value: z.string().min(1).max(128),
   })
   .describe("Workday ID with explicit type (e.g. Employee_ID or WID)");
-
 export type WorkdayId = z.infer<typeof WorkdayIdSchema>;
+
+/** WorkdayId restricted to specific ID types (WID always accepted). */
+export function typedId(...types: [WorkdayIdType, ...WorkdayIdType[]]) {
+  const allowed = new Set<WorkdayIdType>([...types, "WID"]);
+  return WorkdayIdSchema.refine((id) => allowed.has(id.type), {
+    message: `ID type must be one of: ${[...allowed].join(", ")}`,
+  });
+}
+
+export const WorkerIdSchema = typedId("Employee_ID", "Contingent_Worker_ID");
+export const PositionIdSchema = typedId("Position_ID");
+export const OrganizationIdSchema = typedId("Organization_Reference_ID");
+export const SupervisoryOrgIdSchema = typedId("Supervisory_Organization_ID", "Organization_Reference_ID");
+export const CostCenterIdSchema = typedId("Cost_Center_Reference_ID", "Organization_Reference_ID");
+export const LocationIdSchema = typedId("Location_ID");
+export const JobProfileIdSchema = typedId("Job_Profile_ID");
+export const BenefitPlanIdSchema = typedId("Benefit_Plan_ID");
+export const PayGroupIdSchema = typedId("Pay_Group_ID");
+export const PayStatementIdSchema = typedId("Pay_Statement_ID");
+export const TimeOffEntryIdSchema = typedId("Time_Off_Entry_ID", "Business_Process_Event_ID");
+export const BusinessProcessEventIdSchema = typedId("Business_Process_Event_ID");
+
+/** Reference to another object: ID + descriptor (descriptor is PII when it names a person). */
+export const RefSchema = z.object({
+  id: WorkdayIdSchema,
+  descriptor: z.string().max(256).describe("Workday display descriptor"),
+});
+export type Ref = z.infer<typeof RefSchema>;
 
 export const IdempotencyKeySchema = z
   .string()
@@ -40,9 +79,28 @@ export const PreviewTokenSchema = z
   .max(256)
   .describe("Opaque token returned by a preview_* tool; required to commit");
 
+export const UserConfirmedSchema = z
+  .literal(true)
+  .describe("Must be true — explicit confirmation that the user approved the preview summary");
+
 export const TimeOffUnitSchema = z.enum(["HOURS", "DAYS"]);
+export type TimeOffUnit = z.infer<typeof TimeOffUnitSchema>;
 
 export const AbsenceTypeIdSchema = WorkdayIdSchema.refine(
   (id) => id.type === "Time_Off_Type_ID" || id.type === "Absence_Table_ID" || id.type === "WID",
   { message: "Absence type must be Time_Off_Type_ID, Absence_Table_ID, or WID" },
 );
+
+export const CurrencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, "ISO 4217 currency code");
+
+/** Per-call record guardrail for list reads. */
+export const MAX_RECORDS_PER_CALL = 100;
+export const PageInputShape = {
+  limit: z.number().int().min(1).max(MAX_RECORDS_PER_CALL).default(25).describe("Max rows (<=100)"),
+  offset: z.number().int().min(0).default(0).describe("Row offset"),
+};
+export const PageInfoSchema = z.object({
+  total: z.number().int().min(0),
+  limit: z.number().int(),
+  offset: z.number().int(),
+});

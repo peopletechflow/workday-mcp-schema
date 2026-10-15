@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getMyTimeOffBalance } from "../schemas/tools/self-service.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { IsoDateSchema } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
@@ -11,11 +12,8 @@ import type { TokenStore } from "../auth/token-store.js";
 import type { PkcePair } from "../auth/oauth.js";
 import { ensureFixtureSession, requireUserAccessToken } from "../session.js";
 
-const InputSchema = {
-  asOf: IsoDateSchema.optional().describe(
-    "Optional as-of date (ISO YYYY-MM-DD). Defaults to today in the tenant timezone.",
-  ),
-};
+// Input contract lives in src/schemas/tools (schema-first).
+const InputSchema = getMyTimeOffBalance.input;
 
 export function registerGetMyTimeOffBalance(
   server: McpServer,

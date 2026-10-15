@@ -13,15 +13,10 @@ import type { PkcePair } from "../auth/oauth.js";
 import { SignInRequiredError } from "../auth/oauth.js";
 import { ensureFixtureSession, requireUserAccessToken } from "../session.js";
 import { z } from "zod";
+import { previewRequestTimeOff } from "../schemas/tools/self-service.js";
 
-const InputSchema = {
-  startDate: IsoDateSchema.describe("First day of absence (ISO YYYY-MM-DD)"),
-  endDate: IsoDateSchema.describe("Last day of absence (ISO YYYY-MM-DD)"),
-  unit: TimeOffUnitSchema.describe("Unit for quantity (HOURS or DAYS)"),
-  quantity: z.number().positive().max(24 * 31).describe("Amount of time off in the given unit"),
-  timeOffType: AbsenceTypeIdSchema.describe("Workday time-off / absence type ID"),
-  comment: z.string().max(500).optional().describe("Optional comment on the request"),
-};
+// Input contract lives in src/schemas/tools (schema-first).
+const InputSchema = previewRequestTimeOff.input;
 
 export function registerPreviewRequestTimeOff(
   server: McpServer,

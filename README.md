@@ -23,18 +23,36 @@ Env placeholders live in `.env.example`. Develop against a **sandbox / implement
 
 ## Tools
 
-| Tool | Class | PII touched | Surface |
-| --- | --- | --- | --- |
-| `get_my_time_off_balance` | read | balance quantities, type names (no SSN/address) | Absence REST / RaaS (stubbed) |
-| `preview_request_time_off` | write preview | dates, type ID, optional comment | local only (no Workday write) |
-| `commit_request_time_off` | write | same as preview + Workday event ID | Absence REST BP submit (stubbed) |
+**Contract:** all tool inputs/outputs and API objects are Zod schemas in [`src/schemas/`](src/schemas/) (tool contracts in `src/schemas/tools/`). Every tool is listed in [`src/tools/registry.ts`](src/tools/registry.ts); startup fails if registered tools drift from it, a passthrough name appears, or a payroll write is added. See [`docs/SCHEMA.md`](docs/SCHEMA.md).
+
+| Tool | Who | Class | Surface | PII touched | Status |
+| --- | --- | --- | --- | --- | --- |
+| `get_my_worker_profile` | worker | read | REST | preferred name, hire/term dates, manager name | fixture |
+| `get_my_time_off_balance` | worker | read | REST | none beyond type names | live stub + fixture |
+| `list_my_time_off_requests` | worker | read | RaaS | comment | fixture |
+| `preview_request_time_off` | worker | write preview | REST | comment | live stub + fixture |
+| `commit_request_time_off` | worker | write commit (BP) | REST | comment | live stub + fixture |
+| `preview_cancel_time_off` | worker | write preview | WWS | reason | fixture |
+| `commit_cancel_time_off` | worker | write commit (BP) | WWS | reason | fixture |
+| `list_my_team` | manager | read | RaaS | direct reports' preferred names | fixture |
+| `list_team_time_off_requests` | manager | read | RaaS | worker names | fixture |
+| `preview_approve_time_off` | approver | write preview | WWS | worker name, comment | fixture |
+| `commit_approve_time_off` | approver | write commit (BP) | WWS | worker name, comment | fixture |
+| `preview_deny_time_off` | approver | write preview | WWS | worker name, reason (required) | fixture |
+| `commit_deny_time_off` | approver | write commit (BP) | WWS | worker name, reason | fixture |
+| `get_my_benefits_enrollments` | worker | read | RaaS | coverage level (sensitive) | fixture |
+| `list_my_pay_statements` | worker | read (**payroll read-only**) | RaaS | gross/net pay | fixture |
+| `get_supervisory_org` | worker/manager | read | REST | manager name | fixture |
+
+"fixture" = served by `FixtureWorkdayDomainClient` when `WORKDAY_USE_FIXTURES=true`; with fixtures off, `HttpWorkdayDomainClient` returns a `NOT_IMPLEMENTED` error (no silent fallback). There is no `call_workday` tool and no payroll write tool.
 
 ### Write safety
 
 1. **Preview → confirm**: `commit_*` requires a valid `previewToken` and `userConfirmed: true`.
 2. **Idempotency**: commits take `idempotencyKey`; retries return the stored result.
 3. **Pre-check**: before submit, look for an existing matching request in Workday.
-4. **Kill switch**: set `WORKDAY_DISABLED_TOOLS=commit_request_time_off` (comma-separated).
+4. **Kill switch**: set `WORKDAY_DISABLED_TOOLS=commit_request_time_off,commit_approve_time_off` (comma-separated).
+5. **Max records**: list reads cap `limit` at 100.
 
 ## Never do
 
@@ -54,9 +72,9 @@ src/
   session.ts               # per-user token resolution
   auth/                    # OAuth + PKCE, encrypted token store
   workday/                 # client interface, HTTP stub, fixtures
-  tools/                   # task-shaped MCP tools
+  tools/                   # task-shaped MCP tools, framework.ts (read/write-pair helpers), registry.ts
   safety/                  # preview store, idempotency, audit + PII redaction
-  schemas/                 # Zod: ISO dates, Workday ID types
+  schemas/                 # THE CONTRACT: API objects per domain + tools/ (tool I/O)
 ```
 
 Workday HTTP is behind `WorkdayClient`. Default `WORKDAY_USE_FIXTURES=true` uses `FixtureWorkdayClient` (recorded-fixture-friendly). Set `WORKDAY_USE_FIXTURES=false` to use `HttpWorkdayClient` against a sandbox.

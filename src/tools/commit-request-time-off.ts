@@ -12,14 +12,10 @@ import type { PkcePair } from "../auth/oauth.js";
 import { SignInRequiredError } from "../auth/oauth.js";
 import { ensureFixtureSession, requireUserAccessToken } from "../session.js";
 import { z } from "zod";
+import { commitRequestTimeOff } from "../schemas/tools/self-service.js";
 
-const InputSchema = {
-  previewToken: PreviewTokenSchema,
-  idempotencyKey: IdempotencyKeySchema,
-  userConfirmed: z
-    .literal(true)
-    .describe("Must be true — explicit confirmation that the user approved the preview summary"),
-};
+// Input contract lives in src/schemas/tools (schema-first).
+const InputSchema = commitRequestTimeOff.input;
 
 export function registerCommitRequestTimeOff(
   server: McpServer,

@@ -12,6 +12,10 @@ import { FixtureWorkdayClient } from "./workday/fixtures.js";
 import { registerGetMyTimeOffBalance } from "./tools/get-my-time-off-balance.js";
 import { registerPreviewRequestTimeOff } from "./tools/preview-request-time-off.js";
 import { registerCommitRequestTimeOff } from "./tools/commit-request-time-off.js";
+import { registerScaffoldTools } from "./tools/scaffold-tools.js";
+import { TOOL_REGISTRY, assertRegistryInvariants } from "./tools/registry.js";
+import { FixtureWorkdayDomainClient } from "./workday/domain-fixtures.js";
+import { HttpWorkdayDomainClient } from "./workday/domain.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -23,6 +27,9 @@ async function main(): Promise<void> {
   const client = config.useFixtures
     ? new FixtureWorkdayClient()
     : new HttpWorkdayClient(config);
+  const domain = config.useFixtures
+    ? new FixtureWorkdayDomainClient()
+    : new HttpWorkdayDomainClient(config);
 
   // MCP stdio sessions are typically single-user; override via WORKDAY_USER_ID.
   const resolveUserId = (): string => process.env.WORKDAY_USER_ID?.trim() || "local-user";
@@ -35,6 +42,7 @@ async function main(): Promise<void> {
   const deps = {
     config,
     client,
+    domain,
     audit,
     previewStore,
     idempotency,
@@ -43,9 +51,21 @@ async function main(): Promise<void> {
     resolveUserId,
   };
 
+  // Track every registration so the registry invariant check sees the real surface.
+  const registeredNames: string[] = [];
+  const originalRegister = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
+  (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (...a: unknown[]) => {
+    registeredNames.push(String(a[0]));
+    return originalRegister(...a);
+  };
+
   registerGetMyTimeOffBalance(server, deps);
   registerPreviewRequestTimeOff(server, deps);
   registerCommitRequestTimeOff(server, deps);
+  registerScaffoldTools(server, deps);
+
+  // Fail closed if registered tools drift from the registry (no passthrough, no payroll writes).
+  assertRegistryInvariants(registeredNames);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
