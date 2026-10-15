@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "check:rbac": "tsx scripts/check-rbac.ts"
+    "check:rbac": "tsx scripts/check-rbac.ts",
+    "sync:agent-ready": "tsx scripts/sync-agent-ready-catalog.ts"
   },
   "engines": {
     "node": ">=18"

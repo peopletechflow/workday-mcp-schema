@@ -7,6 +7,17 @@ See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [README](../README
 ## The three layers
 
 ### 1. Native Agent-Ready MCP tools (Workday): prefer these first
+
+### Layer 1 catalog in this repo (`src/agent-ready/`)
+This baseline keeps a **generated/maintained catalog** of native Agent-Ready tools for local discovery — names, descriptions, kinds (Basic|Advanced|Prompt), product area, WID placeholders, and `operationType` when known. It is **not** a re-implementation of Workday's MCP server:
+
+- Seed: `src/agent-ready/catalog.generated.ts` (public-docs seed; incomplete vs Workday's 400+ tools).
+- Lookup: `src/agent-ready/registry.ts`.
+- Refresh: `scripts/sync-agent-ready-catalog.ts` + MCP Explorer CSV / ASOR JSON (`src/agent-ready/sync.md`).
+- Meta MCP tools: `list_agent_ready_tools`, `get_agent_ready_tool` (RBAC: `worker_self` / `manager` / `hr_partner` / `admin`).
+- MCP resource: `agent-ready://catalog`.
+- **Do not** register fake `call_*` passthroughs. Runtime still calls Workday MCP with dynamic schemas after ASOR registration.
+
 - **Discovery:** MCP Explorer / ASOR Agent Resource Search with `toolType=AGENT_READY`, `protocol=MCP` (*Discover Available Agent-Ready Tools*).
 - **Types:** **Basic** (read), **Advanced** (write), **Prompt** (read-only helpers that resolve the WIDs Advanced writes need; see *Prompt Tools*).
 - **Auth:** OAuth 2.1 + PKCE. At runtime the call uses an **Agent System User (ASU)** token. The agent is registered in ASOR with tool WIDs.

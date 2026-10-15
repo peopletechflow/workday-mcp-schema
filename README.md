@@ -8,6 +8,8 @@ Intended owner: GitHub user **peopletechflow** (private repo).
 
 This repo is layer 3 of the Workday agent stack. Prefer **native Agent-Ready MCP tools** first, then **Custom Agent Actions (Orchestrate)** for tenant-specific process logic. Use this baseline for cross-tenant patterns, preview/commit/idempotency/audit guardrails, or multi-system composition. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+**Layer 1 catalog:** `src/agent-ready/` seeds/syncs a local catalog of native Agent-Ready tools (name, WID, Basic|Advanced|Prompt, product area). Meta tools `list_agent_ready_tools` / `get_agent_ready_tool` and resource `agent-ready://catalog` document that catalog for local/dev — they do **not** re-implement Workday MCP. The seed is partial (public docs only); refresh with `npm run sync:agent-ready -- --csv <Explorer.csv>` (see `src/agent-ready/sync.md`). Runtime still calls Workday MCP with dynamic schemas.
+
 Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`) before any Workday call. The roles map to Workday security groups and to the ASOR skill's Available To list. In dev, set roles with `WORKDAY_USER_ROLES`. Run `npm run check:rbac` to verify that every tool is mapped. See [docs/RBAC.md](docs/RBAC.md).
 
 ## Use cases
@@ -49,6 +51,8 @@ Env placeholders live in `.env.example`. Develop against a **sandbox / implement
 | `get_my_benefits_enrollments` | worker | read | RaaS | coverage level (sensitive) | fixture |
 | `list_my_pay_statements` | worker | read (**payroll read-only**) | RaaS | gross/net pay | fixture |
 | `get_supervisory_org` | worker/manager | read | REST | manager name | fixture |
+| `list_agent_ready_tools` | worker+ / admin | read (catalog meta) | catalog | none | local catalog |
+| `get_agent_ready_tool` | worker+ / admin | read (catalog meta) | catalog | none | local catalog |
 
 "fixture" = served by `FixtureWorkdayDomainClient` when `WORKDAY_USE_FIXTURES=true`; with fixtures off, `HttpWorkdayDomainClient` returns a `NOT_IMPLEMENTED` error (no silent fallback). There is no `call_workday` tool and no payroll write tool.
 
@@ -81,6 +85,7 @@ src/
   tools/                   # task-shaped MCP tools, framework.ts (read/write-pair helpers), registry.ts
   safety/                  # preview store, idempotency, audit + PII redaction
   schemas/                 # THE CONTRACT: API objects per domain + tools/ (tool I/O)
+  agent-ready/             # Layer-1 catalog of native Workday Agent-Ready MCP tools (seed + sync)
 ```
 
 Workday HTTP is behind `WorkdayClient`. Default `WORKDAY_USE_FIXTURES=true` uses `FixtureWorkdayClient` (recorded-fixture-friendly). Set `WORKDAY_USE_FIXTURES=false` to use `HttpWorkdayClient` against a sandbox.

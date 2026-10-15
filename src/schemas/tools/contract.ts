@@ -2,7 +2,7 @@ import { z } from "zod";
 import { IdempotencyKeySchema, PreviewTokenSchema, UserConfirmedSchema } from "../common.js";
 
 export type ToolClass = "read" | "write-preview" | "write-commit";
-export type WorkdaySurface = "RaaS" | "REST" | "WWS";
+export type WorkdaySurface = "RaaS" | "REST" | "WWS" | "catalog";
 export type ToolAudience = "worker" | "manager";
 
 /** Schema-first tool contract. Registration code consumes these; nothing else defines tool I/O. */

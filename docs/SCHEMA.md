@@ -50,3 +50,14 @@ Surface, PII fields and build reason per tool: `src/tools/registry.ts`.
 - No write without preview + `userConfirmed: true` + `idempotencyKey`; commits pre-check Workday state and submit through the business process.
 - No SSN, DOB, bank, home address in any schema; no tokens or unredacted PII in logs.
 - Sandbox/implementation tenants only during development.
+
+## Agent-Ready catalog (Layer 1, meta only)
+
+`src/agent-ready/` holds a seed/sync catalog of **native** Workday Agent-Ready MCP tools. Meta tool contracts live in `src/schemas/tools/agent-ready.ts`:
+
+| Tool | Input | Output |
+| --- | --- | --- |
+| `list_agent_ready_tools` | `search?, kind?, productArea?, operationType?, limit, offset` | `disclaimer, completenessNote, generatedAt, totalMatching, tools[], productAreas[]` |
+| `get_agent_ready_tool` | `name?` and/or `wid?` | `disclaimer, found, tool?` |
+
+Each catalog row is marked `nativeWorkdayTool: true`. These tools read the local catalog only; they do not call Workday. Refresh with `npm run sync:agent-ready -- --csv <explorer.csv>`. See `src/agent-ready/sync.md`.

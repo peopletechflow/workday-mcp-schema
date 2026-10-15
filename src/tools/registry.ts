@@ -8,7 +8,7 @@ export type RegistryEntry = {
   /** read | write, flattened for docs/metrics. */
   access: "read" | "write";
   audience: ToolAudience;
-  domain: "hcm" | "absence" | "benefits" | "payroll" | "org";
+  domain: "hcm" | "absence" | "benefits" | "payroll" | "org" | "meta";
   surface: WorkdaySurface;
   piiFields: string[];
   /** One-line build-vs-buy reason (SKILL §1.2). */
@@ -39,6 +39,8 @@ export const TOOL_REGISTRY: RegistryEntry[] = [
   { name: T.getMyBenefitsEnrollments.name, toolClass: "read", access: "read", audience: "worker", domain: "benefits", surface: "RaaS", piiFields: ["coverageLevel"], buildReason: BR_SELF, liveStatus: "fixture-only" },
   { name: T.listMyPayStatements.name, toolClass: "read", access: "read", audience: "worker", domain: "payroll", surface: "RaaS", piiFields: ["grossAmount", "netAmount"], buildReason: "Read-only pay summary; payroll writes are out of scope forever.", liveStatus: "fixture-only" },
   { name: T.getSupervisoryOrg.name, toolClass: "read", access: "read", audience: "worker", domain: "org", surface: "REST", piiFields: ["manager.descriptor"], buildReason: "Single-record org read by WID via REST.", liveStatus: "fixture-only" },
+  { name: T.listAgentReadyTools.name, toolClass: "read", access: "read", audience: "worker", domain: "meta", surface: "catalog", piiFields: [], buildReason: "Layer-1 catalog discovery: documents native Workday Agent-Ready tools without re-implementing them.", liveStatus: "fixture-only" },
+  { name: T.getAgentReadyTool.name, toolClass: "read", access: "read", audience: "worker", domain: "meta", surface: "catalog", piiFields: [], buildReason: "Layer-1 catalog lookup by name/WID; not a Workday MCP proxy.", liveStatus: "fixture-only" },
 ];
 
 /** Roles allowed for a registry entry (from src/rbac/permissions.ts; kept parallel to stay DRY). */

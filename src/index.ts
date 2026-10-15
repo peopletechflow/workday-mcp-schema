@@ -13,6 +13,7 @@ import { registerGetMyTimeOffBalance } from "./tools/get-my-time-off-balance.js"
 import { registerPreviewRequestTimeOff } from "./tools/preview-request-time-off.js";
 import { registerCommitRequestTimeOff } from "./tools/commit-request-time-off.js";
 import { registerScaffoldTools } from "./tools/scaffold-tools.js";
+import { registerAgentReadyCatalog } from "./tools/agent-ready-catalog.js";
 import { TOOL_REGISTRY, assertRegistryInvariants } from "./tools/registry.js";
 import { FixtureWorkdayDomainClient } from "./workday/domain-fixtures.js";
 import { HttpWorkdayDomainClient } from "./workday/domain.js";
@@ -69,6 +70,7 @@ async function main(): Promise<void> {
   registerPreviewRequestTimeOff(server, deps);
   registerCommitRequestTimeOff(server, deps);
   registerScaffoldTools(server, deps);
+  registerAgentReadyCatalog(server, deps);
 
   // Fail closed if registered tools drift from the registry (no passthrough, no payroll writes).
   assertRegistryInvariants(registeredNames);

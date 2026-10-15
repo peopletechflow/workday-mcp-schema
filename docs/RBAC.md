@@ -32,6 +32,8 @@ Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See 
 | `get_my_benefits_enrollments` | read | ✅ | — | — | — | — |
 | `list_my_pay_statements` | read | ✅ | — | — | ✅ | — |
 | `get_supervisory_org` | read | ✅ | ✅ | ✅ | — | — |
+| `list_agent_ready_tools` | read (catalog meta) | ✅ | ✅ | ✅ | — | ✅ |
+| `get_agent_ready_tool` | read (catalog meta) | ✅ | ✅ | ✅ | — | ✅ |
 
 The source of truth is `TOOL_PERMISSIONS` in `src/rbac/permissions.ts`. Preview/commit pairs must have identical roles. Payroll has no write tools at all.
 

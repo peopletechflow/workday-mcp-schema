@@ -26,6 +26,10 @@ export const TOOL_PERMISSIONS: Readonly<Record<string, readonly Role[]>> = {
   [T.previewDenyTimeOff.name]: MGR,
   [T.commitDenyTimeOff.name]: MGR,
   [T.getSupervisoryOrg.name]: ["worker_self", "manager", "hr_partner"],
+
+  // Layer-1 catalog meta tools (discovery only; not native Workday passthroughs)
+  [T.listAgentReadyTools.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.getAgentReadyTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
 };
 
 export function rolesForTool(toolName: string): readonly Role[] | undefined {
