@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { IdempotencyKeySchema, PreviewTokenSchema } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
+import { assertToolAllowed, type Role } from "../rbac/index.js";
 import type { WorkdayClient } from "../workday/client.js";
 import { WorkdayApiError } from "../workday/client.js";
 import type { AuditLogger } from "../safety/audit.js";
@@ -28,6 +29,7 @@ export function registerCommitRequestTimeOff(
     tokenStore: TokenStore;
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
+    resolveUserRoles: () => Role[];
   },
 ): void {
   const toolName = "commit_request_time_off";
@@ -53,6 +55,7 @@ export function registerCommitRequestTimeOff(
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
+        assertToolAllowed(deps.resolveUserRoles(), toolName);
         if (args.userConfirmed !== true) {
           throw new Error("userConfirmed must be true before committing a write.");
         }

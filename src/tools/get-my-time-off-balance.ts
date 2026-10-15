@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { IsoDateSchema } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
+import { assertToolAllowed, type Role } from "../rbac/index.js";
 import type { WorkdayClient } from "../workday/client.js";
 import { WorkdayApiError } from "../workday/client.js";
 import type { AuditLogger } from "../safety/audit.js";
@@ -24,6 +25,7 @@ export function registerGetMyTimeOffBalance(
     tokenStore: TokenStore;
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
+    resolveUserRoles: () => Role[];
   },
 ): void {
   const toolName = "get_my_time_off_balance";
@@ -49,6 +51,7 @@ export function registerGetMyTimeOffBalance(
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
+        assertToolAllowed(deps.resolveUserRoles(), toolName);
         await ensureFixtureSession(deps.config, deps.tokenStore, userId);
         const accessToken = await requireUserAccessToken(
           deps.config,

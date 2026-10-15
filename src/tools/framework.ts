@@ -14,6 +14,8 @@ import { NotImplementedError } from "../workday/domain.js";
 import { WorkdayApiError } from "../workday/client.js";
 import type { ToolContract } from "../schemas/tools/contract.js";
 import type { McpToolError } from "../schemas/errors.js";
+import type { Role } from "../rbac/index.js";
+import { assertToolAllowed, RbacDeniedError } from "../rbac/index.js";
 
 export type ToolDeps = {
   config: AppConfig;
@@ -24,6 +26,8 @@ export type ToolDeps = {
   tokenStore: TokenStore;
   pendingPkce: Map<string, PkcePair>;
   resolveUserId: () => string;
+  /** Caller roles (env in fixtures; Workday security groups in production). */
+  resolveUserRoles: () => Role[];
 };
 
 export type CallCtx = { userId: string; accessToken: string };
@@ -42,6 +46,7 @@ export function toToolError(err: unknown): McpToolError {
   if (err instanceof SignInRequiredError) {
     return { error: "SIGN_IN_REQUIRED", message: err.message, authorizeUrl: err.authorizeUrl };
   }
+  if (err instanceof RbacDeniedError) return { error: "PERMISSION_DENIED", message: err.message };
   if (err instanceof ToolUserError) return { error: err.code, message: err.message };
   if (err instanceof NotImplementedError) return { error: "NOT_IMPLEMENTED", message: err.message };
   if (err instanceof WorkdayApiError) {
@@ -98,6 +103,7 @@ export function registerRead<I extends z.ZodRawShape, O extends z.ZodRawShape>(
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, c.name);
+        assertToolAllowed(deps.resolveUserRoles(), c.name);
         const accessToken = await signIn(deps, userId);
         const body = await handler({ userId, accessToken }, args as In<I>);
         const res = ok(c, body);
@@ -105,7 +111,7 @@ export function registerRead<I extends z.ZodRawShape, O extends z.ZodRawShape>(
         return res;
       } catch (err) {
         const e = toToolError(err);
-        await deps.audit.log({ ts: new Date().toISOString(), userId, tool: c.name, inputs: args, result: e.error === "SIGN_IN_REQUIRED" ? "denied" : "error", latencyMs: Date.now() - started, errorMessage: e.message });
+        await deps.audit.log({ ts: new Date().toISOString(), userId, tool: c.name, inputs: args, result: e.error === "SIGN_IN_REQUIRED" || e.error === "PERMISSION_DENIED" ? "denied" : "error", latencyMs: Date.now() - started, errorMessage: e.message });
         return fail(e);
       }
     },
@@ -160,6 +166,7 @@ export function registerWritePair<
       const auditInputs = { idempotencyKey: args.idempotencyKey };
       try {
         assertToolEnabled(deps.config, k.name);
+        assertToolAllowed(deps.resolveUserRoles(), k.name);
         if (args.userConfirmed !== true) {
           throw new ToolUserError("CONFIRMATION_REQUIRED", "userConfirmed must be true before committing a write.");
         }
@@ -179,10 +186,10 @@ export function registerWritePair<
       } catch (err) {
         const e = toToolError(err);
         // Do not pin transient sign-in / confirmation failures to the key.
-        if (!["SIGN_IN_REQUIRED", "CONFIRMATION_REQUIRED", "PREVIEW_INVALID", "TOOL_DISABLED"].includes(e.error)) {
+        if (!["SIGN_IN_REQUIRED", "PERMISSION_DENIED", "CONFIRMATION_REQUIRED", "PREVIEW_INVALID", "TOOL_DISABLED"].includes(e.error)) {
           deps.idempotency.set(userId, k.name, args.idempotencyKey, { status: "error", body: e });
         }
-        await deps.audit.log({ ts: new Date().toISOString(), userId, tool: k.name, inputs: auditInputs, result: e.error === "SIGN_IN_REQUIRED" ? "denied" : "error", latencyMs: Date.now() - started, errorMessage: e.message });
+        await deps.audit.log({ ts: new Date().toISOString(), userId, tool: k.name, inputs: auditInputs, result: e.error === "SIGN_IN_REQUIRED" || e.error === "PERMISSION_DENIED" ? "denied" : "error", latencyMs: Date.now() - started, errorMessage: e.message });
         return fail(e);
       }
     },

@@ -1,0 +1,51 @@
+# Architecture: Workday agent tooling stack
+
+`workday-mcp-schema` is a reusable baseline for custom Workday MCP servers aimed at scale-ups. Adjust it to your processes, org structure, and complexity. It is the **third** layer of the stack. Use it only after the first two layers have been ruled out.
+
+See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [README](../README.md)
+
+## The three layers
+
+### 1. Native Agent-Ready MCP tools (Workday): prefer these first
+- **Discovery:** MCP Explorer / ASOR Agent Resource Search with `toolType=AGENT_READY`, `protocol=MCP` (*Discover Available Agent-Ready Tools*).
+- **Types:** **Basic** (read), **Advanced** (write), **Prompt** (read-only helpers that resolve the WIDs Advanced writes need; see *Prompt Tools*).
+- **Auth:** OAuth 2.1 + PKCE. At runtime the call uses an **Agent System User (ASU)** token. The agent is registered in ASOR with tool WIDs.
+- **Unversioned surface:** do not hard-code tool names or fields. Discover schemas at runtime.
+- **Change policy (Sept 2026):** semantic renames are *non-breaking*. Breaking changes are limited to removal without replacement, validations you can't resolve, or revoked access. Build clients that tolerate renames.
+
+### 2. Custom Agent Actions (Workday Orchestrate): tenant-specific process logic
+Use this layer when the business process is proprietary to the tenant and belongs in Workday Extend/Orchestrate (*Configure Custom Agent Action Orchestrations*). Checklist:
+- Enable the orchestration as an agent action. Name ≤ 30 characters.
+- Give it a **when-to-use** description and an **effect annotation**: Read-Only / Idempotent / Destructive.
+- Describe every request and response property. Leave no empty header/query rows.
+- Deploy through App Hub, register the **Action ID** in the agent skill, and call it via the Orchestrate MCP client.
+
+### 3. External baseline (this repo)
+Use this layer when you need:
+- Cross-tenant patterns that can be reused across customers.
+- Stronger write guardrails: preview → commit, idempotency keys, an append-only audit log.
+- Composition across several systems (Workday + others).
+- Process or org complexity that native tools + Orchestrate don't cover safely.
+
+These invariants stay fixed: **per-user OAuth**, **no shared service account**, **no raw passthrough tool**, **payroll write forbidden**, and RBAC is checked before every Workday call.
+
+## Decision tree
+
+```
+Does a native Agent-Ready tool (Basic/Advanced + Prompt) cover it?
+├─ yes → Use it (layer 1). Discover at runtime; don't pin names.
+└─ no → Is it tenant-specific process logic that fits Extend/Orchestrate?
+        ├─ yes → Build a Custom Agent Action (layer 2).
+        └─ no / needs cross-tenant reuse, preview+commit+idempotency+audit,
+           multi-system composition, or complex org/process rules
+              → Add a task-shaped tool here (layer 3).
+```
+
+## How the layers compose
+- An agent skill can mix all three: native Basic reads, an Orchestrate action for a proprietary approval step, and a guarded preview/commit write from this server.
+- Native **Prompt** tools (WID lookups) can feed inputs to layer-3 previews. Layer 3 must not duplicate a native tool that already covers the case. Track the reason in `buildReason` in `src/tools/registry.ts`.
+- Identity is the same at every layer: the end user's delegated authority. Native tools use the ASU token; this server uses the user's own OAuth token.
+- Authorization stacks up: ASOR skill **Available To** → this server's RBAC (`src/rbac/`) → Workday security groups on the user's token. Workday's check is the one that decides.
+
+## RBAC overview
+Baseline roles: `worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`. Each maps to a Workday security group and the skill's Available To list. `src/rbac/permissions.ts` maps every registered tool to its allowed roles. `registerRead` / `registerWritePair` in `src/tools/framework.ts` call `assertToolAllowed` before sign-in or any Workday request. Startup and `npm run check:rbac` fail if any tool has no mapping. Details: [RBAC.md](./RBAC.md).

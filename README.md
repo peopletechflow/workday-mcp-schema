@@ -4,6 +4,12 @@ Permission-safe **Workday MCP server** scaffold (Node.js / TypeScript). Task-sha
 
 Intended owner: GitHub user **peopletechflow** (private repo).
 
+## Architecture + RBAC
+
+This repo is layer 3 of the Workday agent stack. Prefer **native Agent-Ready MCP tools** first, then **Custom Agent Actions (Orchestrate)** for tenant-specific process logic. Use this baseline for cross-tenant patterns, preview/commit/idempotency/audit guardrails, or multi-system composition. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`) before any Workday call. The roles map to Workday security groups and to the ASOR skill's Available To list. In dev, set roles with `WORKDAY_USER_ROLES`. Run `npm run check:rbac` to verify that every tool is mapped. See [docs/RBAC.md](docs/RBAC.md).
+
 ## Use cases
 
 | User sentence | Tool(s) | Build reason |

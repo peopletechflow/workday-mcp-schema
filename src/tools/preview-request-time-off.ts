@@ -6,6 +6,7 @@ import {
 } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
+import { assertToolAllowed, type Role } from "../rbac/index.js";
 import type { AuditLogger } from "../safety/audit.js";
 import type { PreviewStore } from "../safety/preview-store.js";
 import type { TokenStore } from "../auth/token-store.js";
@@ -27,6 +28,7 @@ export function registerPreviewRequestTimeOff(
     tokenStore: TokenStore;
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
+    resolveUserRoles: () => Role[];
   },
 ): void {
   const toolName = "preview_request_time_off";
@@ -52,6 +54,7 @@ export function registerPreviewRequestTimeOff(
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
+        assertToolAllowed(deps.resolveUserRoles(), toolName);
         if (args.endDate < args.startDate) {
           throw new Error("endDate must be on or after startDate");
         }

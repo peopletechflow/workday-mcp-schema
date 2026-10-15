@@ -1,4 +1,5 @@
 import * as T from "../schemas/tools/index.js";
+import { TOOL_PERMISSIONS, type Role } from "../rbac/index.js";
 import type { ToolAudience, ToolClass, WorkdaySurface } from "../schemas/tools/contract.js";
 
 export type RegistryEntry = {
@@ -40,6 +41,9 @@ export const TOOL_REGISTRY: RegistryEntry[] = [
   { name: T.getSupervisoryOrg.name, toolClass: "read", access: "read", audience: "worker", domain: "org", surface: "REST", piiFields: ["manager.descriptor"], buildReason: "Single-record org read by WID via REST.", liveStatus: "fixture-only" },
 ];
 
+/** Roles allowed for a registry entry (from src/rbac/permissions.ts; kept parallel to stay DRY). */
+export const rolesFor = (e: RegistryEntry): readonly Role[] => TOOL_PERMISSIONS[e.name] ?? [];
+
 /** Static guardrails, also asserted at startup. */
 export function assertRegistryInvariants(registeredNames: string[]): void {
   const names = TOOL_REGISTRY.map((t) => t.name);
@@ -48,7 +52,13 @@ export function assertRegistryInvariants(registeredNames: string[]): void {
     if (/call_workday|passthrough|raw/i.test(t.name)) throw new Error(`Forbidden passthrough tool: ${t.name}`);
     if (t.domain === "payroll" && t.access === "write") throw new Error(`Payroll write tools are forbidden: ${t.name}`);
     if (t.toolClass !== "read" && !t.pairedWith) throw new Error(`Write tool without preview/commit pair: ${t.name}`);
+    const roles = TOOL_PERMISSIONS[t.name];
+    if (!roles || roles.length === 0) throw new Error(`Tool has no RBAC mapping in src/rbac/permissions.ts: ${t.name}`);
+    if (t.access === "write" && roles.includes("payroll_viewer")) throw new Error(`payroll_viewer must not have write tools: ${t.name}`);
+    if (t.pairedWith && (TOOL_PERMISSIONS[t.pairedWith] ?? []).join() !== roles.join()) throw new Error(`Preview/commit pair must share roles: ${t.name}`);
   }
+  const orphanRbac = Object.keys(TOOL_PERMISSIONS).filter((n) => !names.includes(n));
+  if (orphanRbac.length) throw new Error(`RBAC mappings for unknown tools: ${orphanRbac.join(",")}`);
   const missing = names.filter((n) => !registeredNames.includes(n));
   const extra = registeredNames.filter((n) => !names.includes(n));
   if (missing.length || extra.length) {

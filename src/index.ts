@@ -16,6 +16,7 @@ import { registerScaffoldTools } from "./tools/scaffold-tools.js";
 import { TOOL_REGISTRY, assertRegistryInvariants } from "./tools/registry.js";
 import { FixtureWorkdayDomainClient } from "./workday/domain-fixtures.js";
 import { HttpWorkdayDomainClient } from "./workday/domain.js";
+import { resolveRolesFromEnv } from "./rbac/index.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -34,6 +35,10 @@ async function main(): Promise<void> {
   // MCP stdio sessions are typically single-user; override via WORKDAY_USER_ID.
   const resolveUserId = (): string => process.env.WORKDAY_USER_ID?.trim() || "local-user";
 
+  // Fixture/dev: roles from WORKDAY_USER_ROLES. Production: derive from Workday security groups.
+  const userRoles = resolveRolesFromEnv();
+  const resolveUserRoles = () => userRoles;
+
   const server = new McpServer({
     name: "workday-mcp-schema",
     version: "0.1.0",
@@ -49,6 +54,7 @@ async function main(): Promise<void> {
     tokenStore,
     pendingPkce,
     resolveUserId,
+    resolveUserRoles,
   };
 
   // Track every registration so the registry invariant check sees the real surface.
