@@ -1,4 +1,4 @@
-import { AGENT_READY_CATALOG } from "./catalog.generated.js";
+import { AGENT_READY_CATALOG } from "./catalog.js";
 import type {
   AgentReadyKind,
   AgentReadyListFilter,
@@ -56,6 +56,7 @@ export function listAgentReadyTools(filter: AgentReadyListFilter = {}): AgentRea
         norm(t.name).includes(q) ||
         norm(t.description).includes(q) ||
         (t.productArea ? norm(t.productArea).includes(q) : false) ||
+        (t.category ? norm(t.category).includes(q) : false) ||
         (t.wid ? norm(t.wid).includes(q) : false),
     );
   }

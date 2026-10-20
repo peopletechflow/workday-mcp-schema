@@ -37,6 +37,29 @@ Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See 
 
 The source of truth is `TOOL_PERMISSIONS` in `src/rbac/permissions.ts`. Preview/commit pairs must have identical roles. Payroll has no write tools at all.
 
+## Native Agent-Ready tools (tenant-discovered)
+Native tools are not registered by this server, so they live in their own map: `AGENT_READY_TOOL_PERMISSIONS` in `src/rbac/agent-ready.ts`, enforced by `assertAgentReadyCallAllowed(roles, tool, { contextInstanceId, callerWid, targetInScope })`. Scopes: **self** means `contextInstanceId` must be `"me"` or the caller's WID. **reports** means self plus direct/indirect reports. **org** means the caller's supervisory org scope. **all** is still bounded by Workday security. For a non-self target the caller must have checked `targetInScope === true`, otherwise access is denied (fail closed).
+
+| Native tool | worker_self | manager | hr_partner | payroll_viewer | admin |
+|---|---|---|---|---|---|
+| `find_org_chart_workers` | — | reports | org | — | all |
+| `find_service_dates_for_worker` | self | reports | org | — | all |
+| `find_staffing_agent_supervisory_organization_members` | — | reports | org | — | all |
+| `find_staffing_supervisory_organization` | self (own org) | reports | org | — | all |
+| `find_staffing_workers` | self | reports | org | — | all |
+| `find_worker_personal_information` ⚠️ | self | — | org | — | all |
+| `list_organizations` | — | reports | org | — | all |
+| `list_staffing_jobs` | self | reports | org | — | all |
+| `list_worker_addresses` ⚠️ | self | — | org | — | all |
+| `list_worker_direct_reports` | — | reports | org | — | all |
+| `list_worker_email_addresses` | self | reports | org | — | all |
+| `list_worker_organizations` | self | reports | org | — | all |
+| `list_worker_phone_numbers` | self | reports | org | — | all |
+| recipe `resolve_manager_chain` | — | reports | org | — | all |
+| recipe `list_indirect_reports` | — | reports | org | — | all |
+
+⚠️ Sensitive (DOB/personal info, home address): never granted to `manager`. `payroll_viewer` gets no worker-data tools. The admin grant here covers native reads only. It still runs under the admin's own token, never a shared account.
+
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |
 |---|---|---|

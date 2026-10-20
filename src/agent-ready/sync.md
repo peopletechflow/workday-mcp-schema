@@ -6,6 +6,14 @@ This repo holds a **catalog** of Workday native Agent-Ready MCP tools (Layer 1).
 
 The seed in `catalog.generated.ts` is built from **public** Workday developer docs and marketing pages. Workday cites **400+** Agent-Ready tools; public pages only name a handful. Treat the seed as incomplete until you sync from Explorer / ASOR.
 
+## Tenant-discovered tools
+
+`catalog.tenant.ts` is hand-maintained. It holds tools that the Workday Developer Agent found on a real tenant (currently 13 read-only worker-data tools from `bzyvydgxsb_extdev`, 2026-10-20, Extend skill `worker-data-skill`). `catalog.ts` merges it with `catalog.generated.ts` and dedupes by exact name. The generated row wins on WID, and the tenant row's provenance is appended to `source`. Regenerating the seed never removes tenant rows.
+
+- `wid: null` means the WID was not exposed. To fill WIDs, dump ASOR into the generated seed (`--asor`). The merge then picks them up by name. Never type WIDs in by hand from memory.
+- `params` lists only parameters seen during discovery (`contextInstanceId` WID|`"me"`, `search`, `email`, `limit`/`offset`, `organizationType`/subtype). Treat everything else as passthrough/unknown.
+- Every tenant tool needs a role mapping in `src/rbac/agent-ready.ts`. `npm run check:rbac` enforces this.
+
 ## Required columns (CSV)
 
 Export from [MCP Explorer](https://developer.workday.com/mcp-explorer) (updates weekly on Tuesdays) or build a CSV with at least:

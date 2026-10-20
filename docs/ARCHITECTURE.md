@@ -12,6 +12,9 @@ See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [README](../README
 This baseline keeps a **generated/maintained catalog** of native Agent-Ready tools for local discovery — names, descriptions, kinds (Basic|Advanced|Prompt), product area, WID placeholders, and `operationType` when known. It is **not** a re-implementation of Workday's MCP server:
 
 - Seed: `src/agent-ready/catalog.generated.ts` (public-docs seed; incomplete vs Workday's 400+ tools).
+- Tenant-discovered: `src/agent-ready/catalog.tenant.ts` lists 13 read-only worker-data tools that the Workday Developer Agent found on dev tenant `bzyvydgxsb_extdev` (2026-10-20) for Extend skill `worker-data-skill` ([mirror](../extend/skills/worker-data-skill.md)). `wid: null`, because the UI did not expose WIDs. `catalog.ts` merges this file with the seed and dedupes by name, so a sync regeneration does not drop these tools.
+- Native-tool RBAC: `src/rbac/agent-ready.ts` gives each role a scope (`self` / `self_and_reports` / `supervisory_org` / `all`). See [RBAC.md](./RBAC.md#native-agent-ready-tools-tenant-discovered).
+- Recipes: `src/agent-ready/recipes.ts` has read-only `resolve_manager_chain` (cap 10 hops) and `list_indirect_reports` (cap depth 5), built on native tools through an injected adapter. They are not registered as MCP tools yet.
 - Lookup: `src/agent-ready/registry.ts`.
 - Refresh: `scripts/sync-agent-ready-catalog.ts` + MCP Explorer CSV / ASOR JSON (`src/agent-ready/sync.md`).
 - Meta MCP tools: `list_agent_ready_tools`, `get_agent_ready_tool` (RBAC: `worker_self` / `manager` / `hr_partner` / `admin`).
@@ -25,6 +28,8 @@ This baseline keeps a **generated/maintained catalog** of native Agent-Ready too
 - **Change policy (Sept 2026):** semantic renames are *non-breaking*. Breaking changes are limited to removal without replacement, validations you can't resolve, or revoked access. Build clients that tolerate renames.
 
 ### 2. Custom Agent Actions (Workday Orchestrate): tenant-specific process logic
+Extend app `peopletechHrBaseline_rjqhll` hosts our skills. They are built with the Workday Developer Agent against the tenant and then mirrored in [`extend/`](../extend/README.md).
+
 Use this layer when the business process is proprietary to the tenant and belongs in Workday Extend/Orchestrate (*Configure Custom Agent Action Orchestrations*). Checklist:
 - Enable the orchestration as an agent action. Name ≤ 30 characters.
 - Give it a **when-to-use** description and an **effect annotation**: Read-Only / Idempotent / Destructive.

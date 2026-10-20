@@ -13,13 +13,35 @@ export type AgentReadyOperationType = "CREATE" | "PATCH" | "VIEW";
 export type AgentReadyToolDefinition = {
   /** Exact tool name as exposed by Workday MCP (preserve casing from source). */
   name: string;
-  /** ASOR agent_resource.id (WID). Placeholder/unknown when not yet synced. */
-  wid?: string;
+  /**
+   * ASOR agent_resource.id (WID). Placeholder/unknown when not yet synced.
+   * `null` = explicitly unknown (e.g. tenant-discovered tools whose WIDs the UI did not expose).
+   * Never invent a WID.
+   */
+  wid?: string | null;
   kind: AgentReadyKind;
   operationType?: AgentReadyOperationType;
   /** Product line / area when known (e.g. Workforce, Financials, Talent). */
   productArea?: string;
   description: string;
+  /** Finer-grained category inside the product area (e.g. "Worker / Contact"). */
+  category?: string;
+  /** True when the tool is known to be read-only (Basic/Prompt, or a read-only Extend skill). */
+  readOnly?: boolean;
+  /**
+   * Input parameters known from discovery notes. Only parameters actually observed are listed;
+   * anything else is passed through to Workday MCP unvalidated (see `inputSchemaStatus`).
+   */
+  params?: AgentReadyParam[];
+  /**
+   * "partial" = some params known, the rest pass through; "unknown" = no params captured,
+   * discover the live schema on Workday MCP before calling.
+   */
+  inputSchemaStatus?: "partial" | "unknown";
+  /** Workday security domain(s) the tool needs, when stated by the discovery source. */
+  securityDomains?: string[];
+  /** Free-form discovery notes (pagination, response fields seen, etc.). */
+  notes?: string;
   /** Prompt tool names required by an Advanced write tool. */
   requiredPromptTools?: string[];
   /**
@@ -27,6 +49,14 @@ export type AgentReadyToolDefinition = {
    * e.g. "docs:Discover Available Agent-Ready MCP Tools"
    */
   source?: string;
+};
+
+/** A parameter observed during discovery. Type is a human description, not a JSON Schema. */
+export type AgentReadyParam = {
+  name: string;
+  /** e.g. 'WID | "me"', 'string', 'integer'. */
+  type: string;
+  description: string;
 };
 
 export type AgentReadyCatalogMeta = {

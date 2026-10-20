@@ -14,11 +14,17 @@ import { registerRead, ToolUserError } from "./framework.js";
 function toSummary(t: AgentReadyToolDefinition) {
   return {
     name: t.name,
-    ...(t.wid ? { wid: t.wid } : {}),
+    ...(t.wid !== undefined ? { wid: t.wid } : {}),
     kind: t.kind,
     ...(t.operationType ? { operationType: t.operationType } : {}),
     ...(t.productArea ? { productArea: t.productArea } : {}),
+    ...(t.category ? { category: t.category } : {}),
     description: t.description,
+    ...(t.readOnly !== undefined ? { readOnly: t.readOnly } : {}),
+    ...(t.params ? { params: t.params } : {}),
+    ...(t.inputSchemaStatus ? { inputSchemaStatus: t.inputSchemaStatus } : {}),
+    ...(t.securityDomains ? { securityDomains: t.securityDomains } : {}),
+    ...(t.notes ? { notes: t.notes } : {}),
     ...(t.requiredPromptTools ? { requiredPromptTools: t.requiredPromptTools } : {}),
     ...(t.source ? { source: t.source } : {}),
     nativeWorkdayTool: true as const,

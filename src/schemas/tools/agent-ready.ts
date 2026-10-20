@@ -6,11 +6,19 @@ const OpEnum = z.enum(["CREATE", "PATCH", "VIEW"]);
 
 const CatalogToolSummary = z.object({
   name: z.string(),
-  wid: z.string().optional(),
+  /** null = WID explicitly unknown (e.g. tenant-discovered, not exposed in the UI). */
+  wid: z.string().nullable().optional(),
   kind: KindEnum,
   operationType: OpEnum.optional(),
   productArea: z.string().optional(),
+  category: z.string().optional(),
   description: z.string(),
+  readOnly: z.boolean().optional(),
+  params: z.array(z.object({ name: z.string(), type: z.string(), description: z.string() })).optional(),
+  /** partial = some params known, rest pass through; unknown = discover the live schema first. */
+  inputSchemaStatus: z.enum(["partial", "unknown"]).optional(),
+  securityDomains: z.array(z.string()).optional(),
+  notes: z.string().optional(),
   requiredPromptTools: z.array(z.string()).optional(),
   source: z.string().optional(),
   /** Always true — these are native Workday tools, not this server's implementations. */
