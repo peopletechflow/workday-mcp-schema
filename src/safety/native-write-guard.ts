@@ -13,7 +13,12 @@
  * Argument shapes are passthrough (native schemas are discovered at runtime).
  */
 import { getByName } from "../agent-ready/registry.js";
-import { assertAgentReadyCallAllowed, assertAgentReadyScope, AgentReadyWriteDeniedError } from "../rbac/agent-ready.js";
+import {
+  assertAgentReadyCallAllowed,
+  assertAgentReadyScope,
+  AgentReadyWriteDeniedError,
+  type AgentReadyCallContext,
+} from "../rbac/agent-ready.js";
 import type { Role } from "../rbac/roles.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import type { PreviewStore } from "./preview-store.js";
@@ -23,7 +28,25 @@ export type NativeBpFlow =
   | "cancel_time_off"
   | "personal_information_change"
   | "home_contact_change"
-  | "goal_progress";
+  | "goal_progress"
+  // manager-actions-skill
+  | "approve_step"
+  | "deny_step"
+  | "change_job"
+  | "performance_review"
+  | "anytime_feedback"
+  | "payroll_input";
+
+/** Flows from manager-actions-skill: preview details are mandatory. */
+export const MANAGER_ACTION_FLOWS: readonly NativeBpFlow[] = [
+  "approve_step",
+  "deny_step",
+  "change_job",
+  "performance_review",
+  "anytime_feedback",
+  "payroll_input",
+];
+export const DENY_COMMENT_MAX = 256;
 
 export type NativeBpFlowDef = {
   /** Opens the event and returns its WID (absent for single-step flows). */
@@ -60,24 +83,148 @@ export const NATIVE_WRITE_FLOWS: Readonly<Record<NativeBpFlow, NativeBpFlowDef>>
     submit: "submit_home_contact_change",
   },
   goal_progress: { open: "create_worker_goal_events", stage: ["edit_worker_goals"], submit: "submit_worker_goal_events" },
+  approve_step: { stage: [], submit: "approve_business_process_event_step" },
+  deny_step: { stage: [], submit: "deny_business_process_event_step" },
+  // No PATCH field staging after initiate_change_job in this tenant: single-step initiate.
+  change_job: { stage: [], submit: "initiate_change_job" },
+  performance_review: { stage: [], submit: "initiate_performance_review_for_employee" },
+  anytime_feedback: { stage: [], submit: "create_anytime_feedback_events" },
+  // Highest-risk write: manager/hr_partner + payroll domain; payroll_viewer never.
+  payroll_input: { stage: [], submit: "request_payroll_input" },
 };
 
 export const NATIVE_WRITE_PREVIEW_KIND = "native_bp_write";
 
 export type NativeCall = { tool: string; args: Record<string, unknown> };
 
+/** What the user must see before confirming (mandatory for manager-actions flows). */
+export type WritePreviewDetails = {
+  worker: { id: string; descriptor: string };
+  /** e.g. "Approve step", "Change job", "Request payroll input". */
+  action: string;
+  /** YYYY-MM-DD. Required for change_job / payroll_input / performance_review; never defaulted. */
+  effectiveDate?: string;
+  /** Must be "user" where an effective date is required: the agent asked, it did not default. */
+  effectiveDateProvidedBy?: "user";
+  changedFields: { field: string; from?: unknown; to: unknown }[];
+};
+
+export type PreviewApprovers =
+  | { source: "find_remaining_steps_for_business_process_event"; eventWid: string; approvers: string[] }
+  | { source: "tenant-bp-config"; note: string };
+
 export type StagedWritePlan = {
   flow: NativeBpFlow;
+  /** Existing BP event (approve/deny, or a routed event): approvers are read from it. */
+  eventWid?: string;
+  /** BP step actions: worker the step awaits (supplied by caller code from the step/task read). */
+  awaitingApproverWid?: string;
+  details?: WritePreviewDetails;
   /** Human-readable current -> proposed summary shown to the user. */
   summary: string;
-  /** Always the caller: "me" or the caller's own WID. */
+  /**
+   * Target / subject worker: "me" or own WID for self-service flows; for manager actions the
+   * worker acted on (must pass team / org scope).
+   */
   contextInstanceId: string;
   open?: NativeCall;
   stage: NativeCall[];
   submit: NativeCall;
 };
 
-export type NativeWriteCaller = { userId: string; roles: readonly Role[]; callerWid?: string };
+export type NativeWriteCaller = {
+  userId: string;
+  roles: readonly Role[];
+  callerWid?: string;
+  /** Runtime scope proofs supplied by caller code (re-supplied at commit; team scopes expire). */
+  scope?: Pick<AgentReadyCallContext, "teamScope" | "targetInScope" | "payrollDomain">;
+};
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function isIsoDate(v: unknown): v is string {
+  return typeof v === "string" && ISO_DATE.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
+}
+const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
+
+function requireUserEffectiveDate(plan: StagedWritePlan): string {
+  const d = plan.details;
+  if (!d || !isIsoDate(d.effectiveDate)) throw new NativeWriteGuardError(`${plan.flow}: effective date (YYYY-MM-DD) is required.`);
+  if (d.effectiveDateProvidedBy !== "user") {
+    throw new NativeWriteGuardError(`${plan.flow}: effective date must be asked from the user, never defaulted.`);
+  }
+  return d.effectiveDate;
+}
+
+/** Flow-specific input rules (args are passthrough except fields named in the discovery notes). */
+function validateFlowInputs(plan: StagedWritePlan): void {
+  const args = plan.submit.args;
+  if (MANAGER_ACTION_FLOWS.includes(plan.flow)) {
+    const d = plan.details;
+    if (!d || !nonEmpty(d.worker?.id) || !nonEmpty(d.worker?.descriptor) || !nonEmpty(d.action)) {
+      throw new NativeWriteGuardError(`${plan.flow}: preview needs worker (id + name) and action.`);
+    }
+    if (!Array.isArray(d.changedFields) || d.changedFields.length === 0) {
+      throw new NativeWriteGuardError(`${plan.flow}: preview needs the changed fields.`);
+    }
+  }
+  switch (plan.flow) {
+    case "approve_step":
+    case "deny_step": {
+      if (!nonEmpty(plan.awaitingApproverWid)) throw new NativeWriteGuardError(`${plan.flow}: awaitingApproverWid is required.`);
+      const c = args.comment;
+      if (plan.flow === "deny_step") {
+        if (!nonEmpty(c)) throw new NativeWriteGuardError("deny_step: comment is required.");
+        if (c.length > DENY_COMMENT_MAX) throw new NativeWriteGuardError(`deny_step: comment must be <= ${DENY_COMMENT_MAX} characters.`);
+      } else if (c !== undefined && typeof c !== "string") {
+        throw new NativeWriteGuardError("approve_step: comment must be a string.");
+      }
+      return;
+    }
+    case "change_job":
+      requireUserEffectiveDate(plan);
+      return;
+    case "performance_review": {
+      if (args.reviewAboutWorker !== plan.contextInstanceId) {
+        throw new NativeWriteGuardError("performance_review: reviewAboutWorker must equal the target worker.");
+      }
+      if (!nonEmpty(args.reviewTemplate)) throw new NativeWriteGuardError("performance_review: reviewTemplate is required.");
+      if (!isIsoDate(args.startDate) || !isIsoDate(args.endDate) || args.endDate < args.startDate) {
+        throw new NativeWriteGuardError("performance_review: valid startDate <= endDate (YYYY-MM-DD) required.");
+      }
+      if (requireUserEffectiveDate(plan) !== args.startDate) {
+        throw new NativeWriteGuardError("performance_review: preview effective date must equal startDate.");
+      }
+      return;
+    }
+    case "payroll_input": {
+      const pi = args.payrollInput as Record<string, unknown> | undefined;
+      if (!pi || typeof pi !== "object") throw new NativeWriteGuardError("payroll_input: payrollInput is required.");
+      if (pi.worker !== plan.contextInstanceId) throw new NativeWriteGuardError("payroll_input: payrollInput.worker must equal the target worker.");
+      if (!nonEmpty(pi.payComponent)) throw new NativeWriteGuardError("payroll_input: payrollInput.payComponent is required.");
+      if (!isIsoDate(pi.startDate)) throw new NativeWriteGuardError("payroll_input: payrollInput.startDate (YYYY-MM-DD) is required.");
+      if (typeof pi.ongoing !== "boolean") throw new NativeWriteGuardError("payroll_input: payrollInput.ongoing (boolean) is required.");
+      if (pi.ongoing === false && (!isIsoDate(pi.endDate) || pi.endDate < pi.startDate)) {
+        throw new NativeWriteGuardError("payroll_input: endDate (>= startDate) is required when ongoing=false.");
+      }
+      const details = pi.inputDetails;
+      if (!Array.isArray(details) || details.length === 0) throw new NativeWriteGuardError("payroll_input: inputDetails[] is required.");
+      for (const d of details as Record<string, unknown>[]) {
+        if (!nonEmpty(d?.type)) throw new NativeWriteGuardError("payroll_input: inputDetails[].type (WID) is required.");
+        if (typeof d.value !== "number" || !Number.isFinite(d.value)) {
+          throw new NativeWriteGuardError("payroll_input: inputDetails[].value must be a number.");
+        }
+      }
+      const bp = args.businessProcessParameters as Record<string, unknown> | undefined;
+      if (!nonEmpty(bp?.action)) throw new NativeWriteGuardError("payroll_input: businessProcessParameters.action is required.");
+      if (requireUserEffectiveDate(plan) !== pi.startDate) {
+        throw new NativeWriteGuardError("payroll_input: preview effective date must equal payrollInput.startDate.");
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
 
 export class NativeWriteGuardError extends Error {
   constructor(message: string) {
@@ -101,29 +248,92 @@ export function validateStagedWritePlan(plan: StagedWritePlan): void {
     if (!def.stage.includes(s.tool)) throw new NativeWriteGuardError(`${s.tool} is not a stage step of '${plan.flow}'.`);
   }
   if (!def.open && plan.stage.length) throw new NativeWriteGuardError(`Flow '${plan.flow}' is single-step; no stage calls.`);
+  validateFlowInputs(plan);
   for (const c of [plan.open, ...plan.stage, plan.submit].filter((c): c is NativeCall => !!c)) {
     const t = getByName(c.tool);
     if (!t || t.readOnly !== false) throw new NativeWriteGuardError(`${c.tool} is not a catalogued native write tool.`);
   }
 }
 
-/** Preview: validate + RBAC (self only), mint a user-bound token. Calls nothing in Workday. */
-export function previewNativeWrite(
+function callCtx(caller: NativeWriteCaller, plan: StagedWritePlan, previewConfirmed?: boolean): AgentReadyCallContext {
+  return {
+    ...caller.scope,
+    contextInstanceId: plan.contextInstanceId,
+    callerWid: caller.callerWid,
+    awaitingApproverWid: plan.awaitingApproverWid,
+    ...(previewConfirmed ? { previewConfirmed: true } : {}),
+  };
+}
+
+export type NativeWritePreview = {
+  previewToken: string;
+  summary: string;
+  steps: string[];
+  preview: {
+    worker: WritePreviewDetails["worker"] | null;
+    action: string | null;
+    effectiveDate: string | null;
+    changedFields: WritePreviewDetails["changedFields"];
+    approvers: PreviewApprovers;
+  };
+  nextStep: string;
+};
+
+export type PreviewOptions = {
+  /**
+   * Reads find_remaining_steps_for_business_process_event for plan.eventWid (as the user) and
+   * returns approver names. Required whenever the plan carries an eventWid.
+   */
+  remainingSteps?: (eventWid: string) => Promise<string[]>;
+};
+
+/**
+ * Preview: validate + RBAC (scope, team, approver, payroll domain), resolve approvers, mint a
+ * user-bound token. Performs no Workday write (only the remaining-steps read, if any).
+ */
+export async function previewNativeWrite(
   store: PreviewStore,
   caller: NativeWriteCaller,
   plan: StagedWritePlan,
-): { previewToken: string; summary: string; steps: string[]; nextStep: string } {
+  opts: PreviewOptions = {},
+): Promise<NativeWritePreview> {
   validateStagedWritePlan(plan);
-  const ctx = { contextInstanceId: plan.contextInstanceId, callerWid: caller.callerWid };
+  const ctx = callCtx(caller, plan);
   const steps = [plan.open, ...plan.stage, plan.submit].filter((c): c is NativeCall => !!c);
   for (const c of steps) assertAgentReadyScope(caller.roles, c.tool, ctx);
+
+  let approvers: PreviewApprovers;
+  if (plan.eventWid) {
+    if (!opts.remainingSteps) throw new NativeWriteGuardError("Event exists: remainingSteps lookup is required to show approvers.");
+    assertAgentReadyCallAllowed(caller.roles, "find_remaining_steps_for_business_process_event", {
+      ...ctx,
+      awaitingApproverWid: plan.awaitingApproverWid,
+    });
+    approvers = {
+      source: "find_remaining_steps_for_business_process_event",
+      eventWid: plan.eventWid,
+      approvers: await opts.remainingSteps(plan.eventWid),
+    };
+  } else {
+    approvers = {
+      source: "tenant-bp-config",
+      note: "No business process event yet: approvers are determined by the tenant's business process configuration on submit.",
+    };
+  }
   const previewToken = store.createGeneric(NATIVE_WRITE_PREVIEW_KIND, caller.userId, plan.summary, plan);
   return {
     previewToken,
     summary: plan.summary,
     steps: steps.map((c) => c.tool),
+    preview: {
+      worker: plan.details?.worker ?? null,
+      action: plan.details?.action ?? null,
+      effectiveDate: plan.details?.effectiveDate ?? null,
+      changedFields: plan.details?.changedFields ?? [],
+      approvers,
+    },
     nextStep:
-      'Show the summary and ask "Shall I submit this? Please confirm with yes or no." On yes, call commitNativeWrite ' +
+      'Show the preview and ask "Shall I submit this? Please confirm with yes or no." On yes, call commitNativeWrite ' +
       "with this previewToken, userConfirmed=true and a fresh idempotencyKey. On no, discard.",
   };
 }
@@ -169,7 +379,7 @@ export async function commitNativeWrite(
     NATIVE_WRITE_PREVIEW_KIND,
   );
   validateStagedWritePlan(plan);
-  const ctx = { contextInstanceId: plan.contextInstanceId, callerWid: caller.callerWid, previewConfirmed: true };
+  const ctx = callCtx(caller, plan, true);
   const run = async (c: NativeCall, eventWid?: string) => {
     assertAgentReadyCallAllowed(caller.roles, c.tool, ctx);
     return adapter.call(c.tool, c.args, { eventWid });

@@ -72,6 +72,21 @@ Native tools are not registered by this server, so they live in their own map: `
 
 Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a write unless the target is self **and** the call comes from `src/safety/native-write-guard.ts` after a consumed preview token, `userConfirmed: true` and an `idempotencyKey`. For tools keyed by a payslip, event or entry WID, pass the owning worker as `contextInstanceId` (the adapter resolves ownership).
 
+### manager-actions-skill (41 new native tools)
+| Group | worker_self | manager | hr_partner | payroll_viewer | admin |
+|---|---|---|---|---|---|
+| BP event/step reads (4) | own items (subject or awaiting approver = me) | team | org | — | all |
+| Other reads (28: expenses, change-job lookups, history ⚠️, recruiting, performance, feedback received ⚠️, team learning, `list_staffing_business_process_types`) | — | team | org | — | all |
+| `find_anytime_feedback_events` | self | team | org | — | all |
+| Payroll input lookups (3; `…_workers` ⚠️) | — | team | org | pay group | all |
+| approve / deny step | own awaiting steps | team + awaiting approver | org + awaiting approver | — | own awaiting steps |
+| `initiate_change_job`, `initiate_performance_review_for_employee` | — | team | org | — | self |
+| `create_anytime_feedback_events` | anyone (as giver) | team | org | — | anyone (as giver) |
+| `request_payroll_input` ⚠️ (highest risk) | — | team + payroll domain | org + payroll domain | — (never writes) | self + payroll domain |
+
+- **team** means the target is in a `TeamScope` from `verifyTeamScope()`: direct + indirect reports, recursing where `hasManagerRole` is true, depth ≤ 5, TTL 5 min, tied to the caller's WID, and minted only by that module. `targetInScope: true` alone is **not** accepted for managers. The shared time-off reads (`find_absence_balances`, `find_worker_time_off_details`) now also allow a manager on their team.
+- Approve/deny always requires `awaitingApproverWid` = the caller, supplied by the calling code like payslip ownership. Reference lookups (types, templates, statuses, pay components) need no target. "My team" lists are scoped by Workday; org and pay-group scopes still need `targetInScope` for the requested filter.
+
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |
 |---|---|---|

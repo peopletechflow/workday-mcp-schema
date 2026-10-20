@@ -442,10 +442,202 @@ export const SELF_SERVICE_SKILL_TOOLS: AgentReadyToolDefinition[] = [
   },
 ];
 
-/** Every tenant-discovered tool (worker-data-skill 13 + self-service-skill 34 new = 47). */
-export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = [...WORKER_DATA_SKILL_TOOLS, ...SELF_SERVICE_SKILL_TOOLS];
+// ---------------------------------------------------------------------------
+// manager-actions-skill (Extend app peopletechHrBaseline_rjqhll), discovered 2026-10-20.
+// 52 tools: 11 already catalogued above (tagged below), 41 new (35 reads, 6 writes).
+// Mirror: extend/skills/manager-actions-skill.md
+// ---------------------------------------------------------------------------
 
-/** All tenant tools flagged sensitive (personal info, home address, payslips, dependents, legal name). */
+const MANAGER_ACTIONS_SKILL = "manager-actions-skill";
+export const MANAGER_ACTIONS_DISCOVERY_SOURCE = `${TENANT_DISCOVERY_SOURCE} manager-actions-skill`;
+
+/** Already-catalogued tools the manager-actions-skill also uses (tagged with the skill). */
+export const MANAGER_ACTIONS_SHARED_TOOLS = [
+  "find_absence_balances",
+  "find_business_process_tasks",
+  "find_service_dates_for_worker",
+  "find_staffing_agent_supervisory_organization_members",
+  "find_staffing_supervisory_organization",
+  "find_staffing_workers",
+  "find_worker_time_off_details",
+  "list_organizations",
+  "list_staffing_jobs",
+  "list_worker_direct_reports",
+  "list_worker_organizations",
+] as const;
+
+const tagShared = (tools: AgentReadyToolDefinition[]): AgentReadyToolDefinition[] =>
+  tools.map((t) =>
+    (MANAGER_ACTIONS_SHARED_TOOLS as readonly string[]).includes(t.name)
+      ? { ...t, skills: [...(t.skills ?? []), MANAGER_ACTIONS_SKILL] }
+      : t,
+  );
+
+const maRead = {
+  kind: "basic",
+  operationType: "VIEW",
+  readOnly: true,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: MANAGER_ACTIONS_DISCOVERY_SOURCE,
+  skills: [MANAGER_ACTIONS_SKILL],
+} as const;
+const maWrite = {
+  kind: "advanced",
+  readOnly: false,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: MANAGER_ACTIONS_DISCOVERY_SOURCE,
+  skills: [MANAGER_ACTIONS_SKILL],
+} as const;
+
+const BP = "Business Process";
+const EXPENSES = "Spend / Expenses";
+const STAFFING = "Workforce / Staffing";
+const RECRUITING = "Talent / Recruiting";
+const PERF = "Talent / Performance";
+const PAYROLL_INPUT = "Payroll / Payroll Input";
+/** Reference lookup shorthand: no params captured. */
+const lookup = (name: string, productArea: string, category: string, description: string): AgentReadyToolDefinition => ({
+  ...maRead, name, productArea, category, description, inputSchemaStatus: "unknown",
+});
+
+export const MANAGER_ACTIONS_SKILL_TOOLS: AgentReadyToolDefinition[] = [
+  // ---- reads: business process (5) ----
+  { ...maRead, name: "find_business_process_event", productArea: BP, category: "Business Process Event",
+    description: "Business process event detail.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "find_business_process_event_step", productArea: BP, category: "Business Process Step",
+    description: "A business process event step (incl. who it awaits).", inputSchemaStatus: "unknown",
+    notes: "Takes an event WID (param name not captured)." },
+  { ...maRead, name: "find_completed_steps_for_business_process_event", productArea: BP, category: "Business Process Step",
+    description: "Completed steps of a business process event.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "find_remaining_steps_for_business_process_event", productArea: BP, category: "Business Process Step",
+    description: "Remaining steps of a business process event (approver chain).", inputSchemaStatus: "unknown",
+    notes: "Source of the approvers shown in write previews." },
+  lookup("list_staffing_business_process_types", BP, "Business Process Types", "Staffing business process types."),
+  // ---- reads: expenses (2) ----
+  { ...maRead, name: "find_expense_reports", productArea: EXPENSES, category: "Expense Reports",
+    description: "Expense reports for a worker, filtered by status and date range.", inputSchemaStatus: "unknown",
+    notes: "Filters: worker, status, date range (param names not captured)." },
+  { ...maRead, name: "find_expense_lines", productArea: EXPENSES, category: "Expense Lines (sensitive)", sensitive: true,
+    description: "Expense report lines.", inputSchemaStatus: "unknown" },
+  // ---- reads: change job lookups (7) ----
+  { ...maRead, name: "find_workers_to_initiate_change_job", productArea: STAFFING, category: "Change Job",
+    description: "Workers the caller can initiate a change job for.", inputSchemaStatus: "unknown" },
+  lookup("find_change_job_templates", STAFFING, "Change Job", "Change job templates."),
+  lookup("find_job_profiles_for_change_job", STAFFING, "Change Job", "Job profiles valid for a change job."),
+  lookup("find_locations_for_change_job", STAFFING, "Change Job", "Locations valid for a change job."),
+  lookup("find_supervisory_organizations_for_change_job", STAFFING, "Change Job", "Supervisory orgs valid for a change job."),
+  lookup("find_reasons_for_change_job", STAFFING, "Change Job", "Change job reasons."),
+  lookup("find_employee_types_for_change_job", STAFFING, "Change Job", "Employee types valid for a change job."),
+  // ---- reads: worker history (1) ----
+  { ...maRead, name: "find_worker_history_events", productArea: STAFFING, category: "Worker History (sensitive)", sensitive: true,
+    description: "Worker history events.", inputSchemaStatus: "unknown" },
+  // ---- reads: recruiting (10) ----
+  lookup("list_job_requisition_supervisory_organizations", RECRUITING, "Job Requisitions", "Supervisory orgs usable on job requisitions."),
+  lookup("list_job_requisition_statuses", RECRUITING, "Job Requisitions", "Job requisition statuses."),
+  lookup("list_job_requisition_types", RECRUITING, "Job Requisitions", "Job requisition types."),
+  { ...maRead, name: "find_job_requisitions", productArea: RECRUITING, category: "Job Requisitions",
+    description: "Job requisitions, filtered by supervisory organization and status.", inputSchemaStatus: "partial",
+    params: [
+      p("supervisoryOrganization", "WID", "Filter by supervisory organization."),
+      p("status", "WID", "Filter by requisition status."),
+    ] },
+  { ...maRead, name: "find_in_progress_create_job_requisition_events", productArea: RECRUITING, category: "Job Requisitions",
+    description: "In-progress create-job-requisition events.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "find_my_candidates", productArea: RECRUITING, category: "Candidates",
+    description: "The caller's candidates (or one by candidate ID).", inputSchemaStatus: "unknown",
+    notes: "Accepts a candidate ID (param name not captured)." },
+  lookup("list_my_candidate_candidate_stages", RECRUITING, "Candidates", "Candidate stages."),
+  lookup("list_my_candidate_job_profiles", RECRUITING, "Candidates", "Candidate job profiles."),
+  lookup("list_my_candidate_candidate_types", RECRUITING, "Candidates", "Candidate types."),
+  lookup("list_my_candidate_job_families", RECRUITING, "Candidates", "Candidate job families."),
+  // ---- reads: performance (4) ----
+  { ...maRead, name: "find_performance_review", productArea: PERF, category: "Performance Review",
+    description: "Performance reviews for a worker within a date range.", inputSchemaStatus: "unknown",
+    notes: "Takes worker WID and date range (param names not captured)." },
+  { ...maRead, name: "find_worker_from_my_team_to_filter_performance_review", productArea: PERF, category: "Performance Review",
+    description: "Team workers to filter performance reviews by.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "list_workers_for_initiate_performance_review", productArea: PERF, category: "Performance Review",
+    description: "Workers (hierarchical orgs) a performance review can be initiated for.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "find_worker_performance_review_template", productArea: PERF, category: "Performance Review",
+    description: "Performance review templates for a review type.", inputSchemaStatus: "partial",
+    params: [p("promptContext", "string", "Review type id.")] },
+  // ---- reads: feedback (2) ----
+  { ...maRead, name: "find_anytime_feedback_events", productArea: PERF, category: "Anytime Feedback",
+    description: "Anytime feedback events.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "find_worker_anytime_feedback_received", productArea: PERF, category: "Anytime Feedback (sensitive)", sensitive: true,
+    description: "Anytime feedback a worker received.", inputSchemaStatus: "partial",
+    params: [p("fromDate", "date", "Range start."), p("toDate", "date", "Range end.")],
+    notes: "Also takes the worker WID (param name not captured)." },
+  // ---- reads: learning (1) ----
+  { ...maRead, name: "list_my_teams_learning_records", productArea: "Talent / Learning", category: "Team Learning",
+    description: "Learning records of the caller's team.", inputSchemaStatus: "unknown" },
+  // ---- reads: payroll input lookups (3) ----
+  { ...maRead, name: "list_request_payroll_input_workers", productArea: PAYROLL_INPUT, category: "Payroll Input (sensitive)", sensitive: true,
+    description: "Workers eligible for payroll input, with next pay period start.", inputSchemaStatus: "unknown" },
+  { ...maRead, name: "list_request_payroll_input_pay_components", productArea: PAYROLL_INPUT, category: "Payroll Input",
+    description: "Pay components valid for payroll input.", inputSchemaStatus: "partial",
+    params: [p("effectiveDate", "date", "As-of date.")] },
+  { ...maRead, name: "list_request_payroll_input_event_input_types_for_pay_component", productArea: PAYROLL_INPUT, category: "Payroll Input",
+    description: "Input types for a pay component.", inputSchemaStatus: "partial",
+    params: [p("payComponent", "WID", "Pay component.")] },
+
+  // ---- writes (6) ----
+  { ...maWrite, name: "approve_business_process_event_step", productArea: BP, category: "Approvals",
+    description: "Approves a business process step awaiting the caller.",
+    businessProcess: { flow: "approve_step", step: "submit" }, inputSchemaStatus: "partial",
+    params: [p("comment", "string", "Optional comment.")], notes: "Takes the step WID (param name not captured)." },
+  { ...maWrite, name: "deny_business_process_event_step", productArea: BP, category: "Approvals",
+    description: "Denies a business process step awaiting the caller (comment required, max 256 chars).",
+    businessProcess: { flow: "deny_step", step: "submit" }, inputSchemaStatus: "partial",
+    params: [p("comment", "string (required, ≤256)", "Reason for denial.")], notes: "Takes the step WID (param name not captured)." },
+  { ...maWrite, name: "initiate_change_job", operationType: "CREATE", productArea: STAFFING, category: "Change Job",
+    description: "Initiates a change job for a worker; returns a job change ID and routes for approval.",
+    businessProcess: { flow: "change_job", step: "submit" }, inputSchemaStatus: "unknown",
+    notes: "Takes the worker WID (param name not captured). No PATCH field staging afterwards in this tenant." },
+  { ...maWrite, name: "initiate_performance_review_for_employee", operationType: "CREATE", productArea: PERF, category: "Performance Review",
+    description: "Initiates a performance review for an employee.",
+    businessProcess: { flow: "performance_review", step: "submit" }, inputSchemaStatus: "partial",
+    params: [
+      p("reviewAboutWorker", "WID", "Worker the review is about."),
+      p("reviewTemplate", "WID", "Review template."),
+      p("startDate", "date", "Review period start."),
+      p("endDate", "date", "Review period end."),
+    ] },
+  { ...maWrite, name: "create_anytime_feedback_events", operationType: "CREATE", productArea: PERF, category: "Anytime Feedback",
+    description: "Gives anytime feedback to a worker (message, optional badge, competencies/goals, notify-manager flag).",
+    businessProcess: { flow: "anytime_feedback", step: "submit" }, inputSchemaStatus: "unknown",
+    notes: "Fields: target worker, message, optional badge, competencies/goals, notify manager flag (exact param names not captured)." },
+  { ...maWrite, name: "request_payroll_input", operationType: "CREATE", productArea: PAYROLL_INPUT, category: "Payroll Input (sensitive, highest risk)", sensitive: true,
+    description: "Requests a payroll input (one-time or ongoing) for a worker and pay component.",
+    businessProcess: { flow: "payroll_input", step: "submit" }, inputSchemaStatus: "partial",
+    securityDomains: ["Payroll (domain; 403 without it)"],
+    params: [
+      p("payrollInput.worker", "WID", "Worker."),
+      p("payrollInput.payComponent", "WID", "Pay component."),
+      p("payrollInput.startDate", "date YYYY-MM-DD", "Start/effective date."),
+      p("payrollInput.ongoing", "boolean", "Ongoing input."),
+      p("payrollInput.endDate", "date YYYY-MM-DD", "Required when ongoing=false."),
+      p("payrollInput.inputDetails[].type", "WID", "Input type."),
+      p("payrollInput.inputDetails[].value", "number", "Input value."),
+      p("businessProcessParameters.action", "WID", "Business process action."),
+    ],
+    notes: "Admin/payroll-domain level; 403 if the caller lacks the payroll domain." },
+];
+
+/**
+ * Every tenant-discovered tool: worker-data-skill 13 + self-service-skill 34 new +
+ * manager-actions-skill 41 new = 88 (shared tools appear once, tagged with every skill).
+ */
+export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = [
+  ...tagShared(WORKER_DATA_SKILL_TOOLS),
+  ...tagShared(SELF_SERVICE_SKILL_TOOLS),
+  ...MANAGER_ACTIONS_SKILL_TOOLS,
+];
+
+/**
+ * All tenant tools flagged sensitive: personal info, home address, payslips, dependents, legal name,
+ * worker history, expense lines, feedback received, payroll input (request + eligible workers).
+ */
 export const SENSITIVE_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.sensitive).map((t) => t.name);
 
 /** Skill text references this tool, but it is not in the skill's tool list (known gap). */

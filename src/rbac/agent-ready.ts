@@ -7,19 +7,33 @@
  *
  * Scopes:
  *   self             target must be "me" or the caller's own WID
- *   self_and_reports self + direct/indirect reports (manager)
+ *   actor_self       writes only: the caller acts as themselves (feedback giver / awaiting
+ *                    approver); the subject may be anyone Workday lets them act on
+ *   self_and_reports self + VERIFIED team: target must be in a TeamScope from
+ *                    src/rbac/team-scope.ts (direct + indirect reports, hasManagerRole, cap 5)
  *   supervisory_org  workers/orgs in the caller's supported supervisory orgs (hr_partner)
  *   pay_group        workers in the caller's pay group(s) (payroll_viewer)
  *   all              any target Workday security lets the caller see (admin; reads only)
  *
- * Writes (catalog readOnly === false): every grant is "self", the target must be self, and
- * the call must come from src/safety/native-write-guard.ts after preview + explicit confirm.
+ * Writes (catalog readOnly === false): never "all"; the call must come from
+ * src/safety/native-write-guard.ts after preview + explicit confirm. Self-service writes are
+ * "self" for every role; manager-actions writes follow team / org scope.
+ * Business-process step actions (approve/deny) additionally require the caller to be the
+ * step's awaiting approver (`awaitingApproverWid`, supplied by caller code — like payslip ownership).
+ * request_payroll_input additionally requires `payrollDomain: true` (Workday payroll domain).
  */
 import { getByName } from "../agent-ready/registry.js";
 import type { Role } from "./roles.js";
 import { RbacDeniedError } from "./enforce.js";
+import { isInVerifiedTeam, type TeamScope } from "./team-scope.js";
 
-export type AgentReadyScope = "self" | "self_and_reports" | "supervisory_org" | "pay_group" | "all";
+export type AgentReadyScope =
+  | "self"
+  | "actor_self"
+  | "self_and_reports"
+  | "supervisory_org"
+  | "pay_group"
+  | "all";
 export type AgentReadyGrant = Partial<Record<Role, AgentReadyScope>>;
 
 // ---- worker-data-skill (read-only) ----
@@ -34,12 +48,28 @@ const WD = (worker: boolean, manager: boolean): AgentReadyGrant => ({
 // ---- self-service-skill: manager is self-only (own data), never others' ----
 /** Time off, inbox, learning, goals: hr_partner reads within org scope. */
 const SS_ORG_READ: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "supervisory_org", admin: "all" };
+/** Time off reads shared with manager-actions-skill: manager also on verified team. */
+const SS_TEAM_TIME_OFF: AgentReadyGrant = { ...SS_ORG_READ, manager: "self_and_reports" };
 /** Payslips: payroll_viewer reads within pay group; hr_partner excluded (conservative). */
 const SS_PAYSLIP: AgentReadyGrant = { worker_self: "self", manager: "self", payroll_viewer: "pay_group", admin: "all" };
 /** Benefits enrollment, dependents, legal name, personal-info events: self + admin only. */
 const SS_SELF_READ: AgentReadyGrant = { worker_self: "self", manager: "self", admin: "all" };
 /** Writes: self only for every role that may write; hr_partner/payroll_viewer never write. */
 const SS_SELF_WRITE: AgentReadyGrant = { worker_self: "self", manager: "self", admin: "self" };
+
+// ---- manager-actions-skill ----
+const MA_READ: AgentReadyGrant = { manager: "self_and_reports", hr_partner: "supervisory_org", admin: "all" };
+const MA_BP_READ: AgentReadyGrant = { worker_self: "self", ...MA_READ };
+const MA_PAYROLL_READ: AgentReadyGrant = { ...MA_READ, payroll_viewer: "pay_group" };
+/** Approve/deny: always "awaiting approver = caller"; manager subject in team, hr_partner in org. */
+const MA_BP_STEP_WRITE: AgentReadyGrant = {
+  worker_self: "actor_self",
+  manager: "self_and_reports",
+  hr_partner: "supervisory_org",
+  admin: "actor_self",
+};
+/** Team/org writes: admin self only (prior decision). */
+const MA_TEAM_WRITE: AgentReadyGrant = { manager: "self_and_reports", hr_partner: "supervisory_org", admin: "self" };
 
 /** Tool name -> role -> scope. Unlisted tool or role = denied (fail closed). */
 export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGrant>> = {
@@ -61,8 +91,9 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   list_worker_addresses: WD(true, false),
 
   // self-service-skill reads
-  find_absence_balances: SS_ORG_READ,
-  find_worker_time_off_details: SS_ORG_READ,
+  // shared with manager-actions-skill: manager may read verified-team time off
+  find_absence_balances: SS_TEAM_TIME_OFF,
+  find_worker_time_off_details: SS_TEAM_TIME_OFF,
   find_worker_eligible_absence_types: SS_ORG_READ,
   find_worker_valid_time_off_dates: SS_ORG_READ,
   find_business_process_tasks: SS_ORG_READ,
@@ -97,6 +128,44 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   create_worker_goal_events: SS_SELF_WRITE,
   edit_worker_goals: SS_SELF_WRITE,
   submit_worker_goal_events: SS_SELF_WRITE,
+
+  // manager-actions-skill reads (35): manager = verified team, hr_partner = org, admin = all
+  ...Object.fromEntries(
+    [
+      "list_staffing_business_process_types",
+      "find_expense_reports", "find_expense_lines",
+      "find_workers_to_initiate_change_job", "find_change_job_templates", "find_job_profiles_for_change_job",
+      "find_locations_for_change_job", "find_supervisory_organizations_for_change_job", "find_reasons_for_change_job",
+      "find_employee_types_for_change_job",
+      "find_worker_history_events",
+      "list_job_requisition_supervisory_organizations", "list_job_requisition_statuses", "list_job_requisition_types",
+      "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
+      "list_my_candidate_candidate_stages", "list_my_candidate_job_profiles", "list_my_candidate_candidate_types",
+      "list_my_candidate_job_families",
+      "find_performance_review", "find_worker_from_my_team_to_filter_performance_review",
+      "list_workers_for_initiate_performance_review", "find_worker_performance_review_template",
+      "find_worker_anytime_feedback_received",
+      "list_my_teams_learning_records",
+    ].map((n) => [n, MA_READ]),
+  ),
+  // BP event/step reads: worker_self on own items (subject or awaiting approver = me)
+  find_business_process_event: MA_BP_READ,
+  find_business_process_event_step: MA_BP_READ,
+  find_completed_steps_for_business_process_event: MA_BP_READ,
+  find_remaining_steps_for_business_process_event: MA_BP_READ,
+  find_anytime_feedback_events: { ...MA_READ, worker_self: "self" },
+  // payroll input lookups: payroll_viewer read-only within pay group
+  list_request_payroll_input_workers: MA_PAYROLL_READ, // sensitive
+  list_request_payroll_input_pay_components: MA_PAYROLL_READ,
+  list_request_payroll_input_event_input_types_for_pay_component: MA_PAYROLL_READ,
+
+  // manager-actions-skill writes (6)
+  approve_business_process_event_step: MA_BP_STEP_WRITE,
+  deny_business_process_event_step: MA_BP_STEP_WRITE,
+  initiate_change_job: MA_TEAM_WRITE,
+  initiate_performance_review_for_employee: MA_TEAM_WRITE,
+  create_anytime_feedback_events: { ...MA_TEAM_WRITE, worker_self: "actor_self", admin: "actor_self" },
+  request_payroll_input: MA_TEAM_WRITE, // + payrollDomain required; payroll_viewer never writes
 };
 
 /** Recipes: roles = intersection of the tools they call, minus worker_self (chains leave self). */
@@ -107,17 +176,72 @@ export const AGENT_READY_RECIPE_PERMISSIONS: Readonly<Record<string, AgentReadyG
 
 const SCOPE_RANK: Record<AgentReadyScope, number> = {
   self: 0,
+  actor_self: 0,
   self_and_reports: 1,
   supervisory_org: 2,
   pay_group: 2,
   all: 3,
 };
 
-/** Write-specific denial (non-self target, or missing preview + confirmation). */
-export class AgentReadyWriteDeniedError extends RbacDeniedError {
+/**
+ * How a tool's target is checked:
+ *   worker      (default) contextInstanceId = target worker (or the owner of a payslip/event/entry)
+ *   none        reference lookup (types, templates, statuses, pay components): role grant suffices
+ *   caller_list list Workday scopes to the caller (my team / my candidates / eligible workers);
+ *               org / pay-group scopes still need targetInScope for the requested filter
+ */
+export type AgentReadyTarget = "worker" | "none" | "caller_list";
+
+const NONE_TARGET = [
+  "list_organizations", "get_learning_content", "find_goal_status",
+  "list_staffing_business_process_types",
+  "find_change_job_templates", "find_job_profiles_for_change_job", "find_locations_for_change_job",
+  "find_supervisory_organizations_for_change_job", "find_reasons_for_change_job", "find_employee_types_for_change_job",
+  "list_job_requisition_supervisory_organizations", "list_job_requisition_statuses", "list_job_requisition_types",
+  "list_my_candidate_candidate_stages", "list_my_candidate_job_profiles", "list_my_candidate_candidate_types",
+  "list_my_candidate_job_families", "find_worker_performance_review_template",
+  "list_request_payroll_input_pay_components", "list_request_payroll_input_event_input_types_for_pay_component",
+];
+const CALLER_LIST_TARGET = [
+  "find_workers_to_initiate_change_job", "find_worker_from_my_team_to_filter_performance_review",
+  "list_workers_for_initiate_performance_review", "list_my_teams_learning_records", "list_request_payroll_input_workers",
+  "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
+];
+export const AGENT_READY_TOOL_TARGETS: Readonly<Record<string, AgentReadyTarget>> = {
+  ...Object.fromEntries(NONE_TARGET.map((n) => [n, "none" as const])),
+  ...Object.fromEntries(CALLER_LIST_TARGET.map((n) => [n, "caller_list" as const])),
+};
+
+/** BP tools where "awaiting approver = caller" counts as an own item. */
+export const BP_STEP_TOOLS: ReadonlySet<string> = new Set([
+  "find_business_process_tasks",
+  "find_business_process_event",
+  "find_business_process_event_step",
+  "find_completed_steps_for_business_process_event",
+  "find_remaining_steps_for_business_process_event",
+  "approve_business_process_event_step",
+  "deny_business_process_event_step",
+]);
+/** Step actions: the caller MUST be the awaiting approver, whatever the role. */
+export const BP_STEP_ACTIONS: ReadonlySet<string> = new Set([
+  "approve_business_process_event_step",
+  "deny_business_process_event_step",
+]);
+/** Requires the Workday payroll domain capability in addition to the role grant. */
+export const REQUIRES_PAYROLL_DOMAIN: ReadonlySet<string> = new Set(["request_payroll_input"]);
+
+/** Denial with a specific reason (team scope, approver, payroll domain, write gate). */
+export class AgentReadyDeniedError extends RbacDeniedError {
   constructor(toolName: string, held: readonly Role[], reason: string) {
     super(toolName, [], held);
     this.message = `Access denied: '${toolName}' ${reason}`;
+    this.name = "AgentReadyDeniedError";
+  }
+}
+/** Write-specific denial (missing preview + confirmation, non-self target). */
+export class AgentReadyWriteDeniedError extends AgentReadyDeniedError {
+  constructor(toolName: string, held: readonly Role[], reason: string) {
+    super(toolName, held, reason);
     this.name = "AgentReadyWriteDeniedError";
   }
 }
@@ -125,17 +249,24 @@ export class AgentReadyWriteDeniedError extends RbacDeniedError {
 export type AgentReadyCallContext = {
   /**
    * Worker the call targets: "me", a worker WID, or undefined when the tool has no worker
-   * target. For tools keyed by another WID (payslip, event, entry, task), pass the OWNING
-   * worker here — the adapter must resolve ownership before calling.
+   * target. For tools keyed by another WID (payslip, event, step, entry, task), pass the OWNING
+   * / SUBJECT worker here — caller code must resolve ownership before calling.
    */
   contextInstanceId?: string;
-  /** Caller's own worker WID, when resolved. */
+  /** Caller's own worker WID, when resolved. Required for verified-team access. */
   callerWid?: string;
   /**
-   * Result of the runtime scope check for non-self targets (is the target a report / in the
-   * caller's supervisory orgs / pay group?). undefined = not checked -> non-self denied.
+   * Result of the runtime scope check for non-self targets for org / pay-group scopes
+   * (hr_partner, payroll_viewer). undefined = not checked -> non-self denied.
+   * NOT accepted for manager scope: managers need `teamScope`.
    */
   targetInScope?: boolean;
+  /** Verified team (src/rbac/team-scope.ts verifyTeamScope) for manager self_and_reports access. */
+  teamScope?: TeamScope;
+  /** BP step tools: the worker the step is awaiting (from find_business_process_event_step / tasks). */
+  awaitingApproverWid?: string;
+  /** Caller holds the Workday payroll domain (required for request_payroll_input). */
+  payrollDomain?: boolean;
   /** Set only by src/safety/native-write-guard.ts after a consumed preview + userConfirmed. */
   previewConfirmed?: boolean;
 };
@@ -144,19 +275,53 @@ export function grantsFor(name: string): AgentReadyGrant | undefined {
   return AGENT_READY_TOOL_PERMISSIONS[name] ?? AGENT_READY_RECIPE_PERMISSIONS[name];
 }
 
+export function targetKindFor(name: string): AgentReadyTarget {
+  return AGENT_READY_TOOL_TARGETS[name] ?? "worker";
+}
+
 /** True when the catalog marks the native tool as a write (readOnly === false). */
 export function isAgentReadyWrite(name: string): boolean {
   return getByName(name)?.readOnly === false;
 }
 
+function isSelfId(id: string | undefined, callerWid: string | undefined): boolean {
+  const v = id?.trim();
+  return v === "me" || (!!v && !!callerWid && v === callerWid);
+}
+
 export function isSelfTarget(ctx: AgentReadyCallContext): boolean {
-  const id = ctx.contextInstanceId?.trim();
-  return id === "me" || (!!id && !!ctx.callerWid && id === ctx.callerWid);
+  return isSelfId(ctx.contextInstanceId, ctx.callerWid);
+}
+
+function permits(scope: AgentReadyScope, name: string, write: boolean, ctx: AgentReadyCallContext): boolean {
+  if (write && scope === "all") return false; // admin full READ only
+  const kind = targetKindFor(name);
+  if (kind === "none") return !write;
+  if (kind === "caller_list") {
+    if (write) return false;
+    if (scope === "supervisory_org" || scope === "pay_group") return ctx.targetInScope === true;
+    return scope !== "actor_self";
+  }
+  const self =
+    isSelfTarget(ctx) || (BP_STEP_TOOLS.has(name) && !BP_STEP_ACTIONS.has(name) && isSelfId(ctx.awaitingApproverWid, ctx.callerWid));
+  switch (scope) {
+    case "all":
+      return true;
+    case "actor_self":
+      return write; // actor (giver / approver) is the caller; approver rule enforced separately
+    case "self":
+      return self;
+    case "self_and_reports":
+      return self || (!!ctx.callerWid && isInVerifiedTeam(ctx.teamScope, ctx.contextInstanceId, ctx.callerWid));
+    case "supervisory_org":
+    case "pay_group":
+      return self || ctx.targetInScope === true;
+  }
 }
 
 /**
  * Role/scope check without the write-confirmation gate (used by the guard at preview time).
- * Returns the widest scope held, or throws RbacDeniedError.
+ * Returns the widest permitting scope, or throws RbacDeniedError.
  */
 export function assertAgentReadyScope(
   userRoles: readonly Role[],
@@ -169,23 +334,27 @@ export function assertAgentReadyScope(
     .map((r) => grant[r])
     .filter((s): s is AgentReadyScope => !!s)
     .sort((a, b) => SCOPE_RANK[b] - SCOPE_RANK[a]);
-  const best = held[0];
-  if (!best) throw new RbacDeniedError(name, allowedRoles, userRoles);
-  if (isAgentReadyWrite(name)) {
-    // Defense in depth: writes are self-only for everyone, whatever the grant says.
-    if (!isSelfTarget(ctx)) {
-      throw new AgentReadyWriteDeniedError(name, userRoles, 'is a write: target must be "me" or your own WID.');
-    }
-    return "self";
+  if (!held.length) throw new RbacDeniedError(name, allowedRoles, userRoles);
+  const write = isAgentReadyWrite(name);
+  if (REQUIRES_PAYROLL_DOMAIN.has(name) && ctx.payrollDomain !== true) {
+    throw new AgentReadyDeniedError(name, userRoles, "requires the Workday payroll domain capability (payrollDomain).");
   }
-  if (best === "all" || isSelfTarget(ctx)) return best;
-  if (best === "self") {
-    throw new RbacDeniedError(name, allowedRoles.filter((r) => grant[r] !== "self"), userRoles);
+  if (BP_STEP_ACTIONS.has(name) && !isSelfId(ctx.awaitingApproverWid, ctx.callerWid)) {
+    throw new AgentReadyDeniedError(name, userRoles, "is only allowed on steps where you are the awaiting approver.");
   }
-  if (ctx.targetInScope !== true) {
-    throw new RbacDeniedError(name, allowedRoles.filter((r) => grant[r] === "all"), userRoles);
+  const ok = held.find((s) => permits(s, name, write, ctx));
+  if (ok) return ok;
+  if (held.includes("self_and_reports") && !held.some((s) => s === "supervisory_org" || s === "all")) {
+    throw new AgentReadyDeniedError(
+      name,
+      userRoles,
+      "target is not in your verified team (direct + indirect reports via hasManagerRole, depth <= 5).",
+    );
   }
-  return best;
+  if (write && held.every((s) => s === "self")) {
+    throw new AgentReadyWriteDeniedError(name, userRoles, 'is a write: target must be "me" or your own WID.');
+  }
+  throw new RbacDeniedError(name, allowedRoles, userRoles);
 }
 
 /**
