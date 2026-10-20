@@ -19,6 +19,9 @@ const CatalogToolSummary = z.object({
   inputSchemaStatus: z.enum(["partial", "unknown"]).optional(),
   securityDomains: z.array(z.string()).optional(),
   notes: z.string().optional(),
+  sensitive: z.boolean().optional(),
+  skills: z.array(z.string()).optional(),
+  businessProcess: z.object({ flow: z.string(), step: z.enum(["open", "stage", "submit"]) }).optional(),
   requiredPromptTools: z.array(z.string()).optional(),
   source: z.string().optional(),
   /** Always true — these are native Workday tools, not this server's implementations. */

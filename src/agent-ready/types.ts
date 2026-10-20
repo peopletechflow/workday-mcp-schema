@@ -40,6 +40,15 @@ export type AgentReadyToolDefinition = {
   inputSchemaStatus?: "partial" | "unknown";
   /** Workday security domain(s) the tool needs, when stated by the discovery source. */
   securityDomains?: string[];
+  /** Exposes sensitive personal / pay / dependent data (stricter RBAC, see src/rbac/agent-ready.ts). */
+  sensitive?: boolean;
+  /** Extend skills that use this tool (tenant-discovered rows). */
+  skills?: readonly string[];
+  /**
+   * Write tools only: the staged business-process flow and step this tool performs
+   * (open event -> stage -> submit). Executed only via src/safety/native-write-guard.ts.
+   */
+  businessProcess?: { flow: string; step: "open" | "stage" | "submit" };
   /** Free-form discovery notes (pagination, response fields seen, etc.). */
   notes?: string;
   /** Prompt tool names required by an Advanced write tool. */

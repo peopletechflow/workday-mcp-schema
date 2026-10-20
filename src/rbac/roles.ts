@@ -10,7 +10,9 @@ export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   manager: "Team roster and team time-off reads; approve/deny team time-off.",
   hr_partner: "Broader org reads (supervisory org). No payroll write.",
   payroll_viewer: "Pay statement reads only. No writes.",
-  admin: "Kill switch / config introspection only. Never a shared account for user data.",
+  admin:
+    "Full READ access to worker data (all scopes) plus kill switch / config. Uses the admin's own sign-in, " +
+    "never a shared account. Writes only on the admin's own record, always preview + explicit confirm.",
 };
 
 export function isRole(value: string): value is Role {

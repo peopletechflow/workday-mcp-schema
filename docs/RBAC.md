@@ -11,27 +11,27 @@ Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See 
 | `manager` | Team roster and team time-off reads. Approve/deny team time-off (preview+commit). |
 | `hr_partner` | Broader org reads (supervisory org, team/roster reads). No payroll write. |
 | `payroll_viewer` | Pay statement reads only. No writes (enforced at startup). |
-| `admin` | Kill switch / config introspection only. No user-data tools are granted. Never a shared account. |
+| `admin` | **Full read** access to worker data, plus kill switch / config. Uses the admin's own sign-in, never a shared account. Writes only on the admin's own record (self), and always preview + explicit confirm. No Layer-3 write tools are granted. |
 
 ## Permissions matrix (tool → roles)
 | Tool | Access | worker_self | manager | hr_partner | payroll_viewer | admin |
 |---|---|---|---|---|---|---|
-| `get_my_worker_profile` | read | ✅ | — | — | — | — |
-| `get_my_time_off_balance` | read | ✅ | — | — | — | — |
-| `list_my_time_off_requests` | read | ✅ | — | — | — | — |
+| `get_my_worker_profile` | read | ✅ | — | — | — | ✅ |
+| `get_my_time_off_balance` | read | ✅ | — | — | — | ✅ |
+| `list_my_time_off_requests` | read | ✅ | — | — | — | ✅ |
 | `preview_request_time_off` | write-preview | ✅ | — | — | — | — |
 | `commit_request_time_off` | write-commit | ✅ | — | — | — | — |
 | `preview_cancel_time_off` | write-preview | ✅ | — | — | — | — |
 | `commit_cancel_time_off` | write-commit | ✅ | — | — | — | — |
-| `list_my_team` | read | — | ✅ | ✅ | — | — |
-| `list_team_time_off_requests` | read | — | ✅ | ✅ | — | — |
+| `list_my_team` | read | — | ✅ | ✅ | — | ✅ |
+| `list_team_time_off_requests` | read | — | ✅ | ✅ | — | ✅ |
 | `preview_approve_time_off` | write-preview | — | ✅ | — | — | — |
 | `commit_approve_time_off` | write-commit | — | ✅ | — | — | — |
 | `preview_deny_time_off` | write-preview | — | ✅ | — | — | — |
 | `commit_deny_time_off` | write-commit | — | ✅ | — | — | — |
-| `get_my_benefits_enrollments` | read | ✅ | — | — | — | — |
-| `list_my_pay_statements` | read | ✅ | — | — | ✅ | — |
-| `get_supervisory_org` | read | ✅ | ✅ | ✅ | — | — |
+| `get_my_benefits_enrollments` | read | ✅ | — | — | — | ✅ |
+| `list_my_pay_statements` | read | ✅ | — | — | ✅ | ✅ |
+| `get_supervisory_org` | read | ✅ | ✅ | ✅ | — | ✅ |
 | `list_agent_ready_tools` | read (catalog meta) | ✅ | ✅ | ✅ | — | ✅ |
 | `get_agent_ready_tool` | read (catalog meta) | ✅ | ✅ | ✅ | — | ✅ |
 
@@ -58,7 +58,19 @@ Native tools are not registered by this server, so they live in their own map: `
 | recipe `resolve_manager_chain` | — | reports | org | — | all |
 | recipe `list_indirect_reports` | — | reports | org | — | all |
 
-⚠️ Sensitive (DOB/personal info, home address): never granted to `manager`. `payroll_viewer` gets no worker-data tools. The admin grant here covers native reads only. It still runs under the admin's own token, never a shared account.
+⚠️ Sensitive (DOB/personal info, home address): never granted to `manager`. `payroll_viewer` gets no worker-data tools. Admin has full read and always runs under the admin's own token, never a shared account.
+
+### self-service-skill (34 new native tools)
+| Group | Tools | worker_self | manager | hr_partner | payroll_viewer | admin |
+|---|---|---|---|---|---|---|
+| Time off reads | `find_absence_balances`, `find_worker_time_off_details`, `find_worker_eligible_absence_types`, `find_worker_valid_time_off_dates` | self | self | org | — | all |
+| Inbox / learning / goals reads | `find_business_process_tasks`, `find_plan_assignments`, `get_learning_content`, `find_learning_transcript`, `find_continue_learning`, `list_my_goals`, `find_goal_status` | self | self | org | — | all |
+| Payslips ⚠️ | `find_payslips`, `find_payslip_summary`, `find_payslip_details` | self | self | — | pay group | all |
+| Benefits | `find_latest_employee_enrollment_event`, `get_employee_enrollment_history`, `view_benefits_dependent` ⚠️ | self | self | — | — | all |
+| Personal data reads | `find_worker_legal_name` ⚠️, `find_detailed_personal_information_change_event` | self | self | — | — | all |
+| Writes (15, staged BP) | `create_*` / `update_*` / `edit_*` / `submit_*` (time off, personal info, home contact, goals) | self | self | — | — | self |
+
+Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a write unless the target is self **and** the call comes from `src/safety/native-write-guard.ts` after a consumed preview token, `userConfirmed: true` and an `idempotencyKey`. For tools keyed by a payslip, event or entry WID, pass the owning worker as `contextInstanceId` (the adapter resolves ownership).
 
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |

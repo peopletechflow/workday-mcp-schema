@@ -6,7 +6,7 @@ This folder mirrors the **Workday Extend** app that hosts our custom agent skill
 | --- | --- |
 | Extend app | `peopletechHrBaseline_rjqhll` |
 | Dev tenant | `bzyvydgxsb_extdev` (wd119, Workday Open Developer Platform personal dev tenant) |
-| Skills | [`worker-data-skill`](./skills/worker-data-skill.md) (read-only) |
+| Skills | [`worker-data-skill`](./skills/worker-data-skill.md) (read-only, 13 tools) · [`self-service-skill`](./skills/self-service-skill.md) (self only, 39 tools incl. 15 staged writes; known gap: `update_personal_information_marital_status`) |
 
 ## How skills are built
 
