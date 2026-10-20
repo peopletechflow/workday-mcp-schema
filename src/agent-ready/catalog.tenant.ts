@@ -272,16 +272,17 @@ export const SELF_SERVICE_SKILL_TOOLS: AgentReadyToolDefinition[] = [
       p("numberOfPayslips", "integer", "How many payslips to return."),
       p("mostRecent", "boolean", "Only the most recent payslip."),
     ],
+    notes: "Pass the payslip owner as contextInstanceId. Native tool is self-service server-side: the tenant returns only the caller's own payslips until a payroll-admin data source / Custom Agent Action exists.",
   },
   {
     ...ssRead, name: "find_payslip_summary", productArea: PAYROLL, category: "Payslips (sensitive)", sensitive: true,
     description: "Payslip summary (payment date, period, gross, net, YTD).",
-    inputSchemaStatus: "unknown", notes: "Takes a payslip WID (param name not captured).",
+    inputSchemaStatus: "unknown", notes: "Takes a payslip WID (param name not captured); pass the owner as contextInstanceId. Native tool is self-service server-side: the tenant returns only the caller's own payslips until a payroll-admin data source / Custom Agent Action exists.",
   },
   {
     ...ssRead, name: "find_payslip_details", productArea: PAYROLL, category: "Payslips (sensitive)", sensitive: true,
     description: "Payslip details: earnings, taxes, deductions, employer-paid benefits.",
-    inputSchemaStatus: "unknown", notes: "Takes a payslip WID (param name not captured).",
+    inputSchemaStatus: "unknown", notes: "Takes a payslip WID (param name not captured); pass the owner as contextInstanceId. Native tool is self-service server-side: the tenant returns only the caller's own payslips until a payroll-admin data source / Custom Agent Action exists.",
   },
   // ---- reads: benefits ----
   {
@@ -787,7 +788,7 @@ export const PAYROLL_VIEWER_SKILL_TOOLS: AgentReadyToolDefinition[] = [
     sensitive: true,
     description: "Payroll results for a pay group detail and period (primary result-browsing tool).",
     notes: "Takes pay group detail + period (param names not captured). Response is shaped by src/safety/pay-results.ts: " +
-      "summary (count + statuses) unless a payroll_viewer explicitly asks for worker-level lines. " + PG_NOTE },
+      "summary (count + statuses) unless a payroll_viewer or admin explicitly asks for worker-level lines. " + PG_NOTE },
   { ...pvRead, name: "payroll_result_calculation_statuses_prompt", productArea: PAY_RESULTS, category: "Calculation Statuses (prompt-like lookup)",
     description: "Payroll result calculation statuses (off-cycle contexts)." },
   { ...pvRead, name: "payroll_result_calculation_statuses_all_statuses_prompt", productArea: PAY_RESULTS, category: "Calculation Statuses (prompt-like lookup)",
@@ -836,10 +837,16 @@ export const PAYROLL_VIEWER_SKILL_TOOLS: AgentReadyToolDefinition[] = [
     notes: SELF_NOTE },
 ];
 
+/**
+ * Payslip reads (find_payslip_details is self-service-skill only): every role reads its own;
+ * payroll_viewer also reads workers in its pay group(s); admin reads all. NOTE: Workday's native
+ * tools are self-service server-side, so the tenant still returns only the caller's own payslips
+ * until a payroll-admin data source or Custom Agent Action exists.
+ */
+export const PAYSLIP_TOOLS = ["find_payslips", "find_payslip_summary", "find_payslip_details"] as const;
+
 /** payroll-viewer-skill tools that are self-only for EVERY role (incl. admin): caller's own record. */
 export const PAYROLL_SELF_ONLY_TOOLS = [
-  "find_payslips",
-  "find_payslip_summary",
   "find_worker_next_payroll_payment_date",
   "find_tax_form_box_details",
   "list_countries_for_worker_year_end_tax_documents",

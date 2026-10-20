@@ -10,7 +10,7 @@ Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See 
 | `worker_self` | Own profile, own time-off, own benefits, own pay statements (read). Request/cancel own time-off (preview+commit). |
 | `manager` | Team roster and team time-off reads. Approve/deny team time-off (preview+commit). |
 | `hr_partner` | Broader org reads (supervisory org, team/roster reads). No payroll write. |
-| `payroll_viewer` | Pay group, pay result and payroll input reads (payroll-viewer-skill); own pay only. No writes (enforced at startup). |
+| `payroll_viewer` | Pay group, pay result and payroll input reads (payroll-viewer-skill); payslips of workers in its own pay group(s); other pay data own only. No writes (enforced at startup). |
 | `admin` | **Full read** access to worker data, plus kill switch / config. Uses the admin's own sign-in, never a shared account. Writes only on the admin's own record (self), and always preview + explicit confirm. No Layer-3 write tools are granted. |
 
 ## Permissions matrix (tool → roles)
@@ -65,7 +65,7 @@ Native tools are not registered by this server, so they live in their own map: `
 |---|---|---|---|---|---|---|
 | Time off reads | `find_absence_balances`, `find_worker_time_off_details`, `find_worker_eligible_absence_types`, `find_worker_valid_time_off_dates` | self | self | org | — | all |
 | Inbox / learning / goals reads | `find_business_process_tasks`, `find_plan_assignments`, `get_learning_content`, `find_learning_transcript`, `find_continue_learning`, `list_my_goals`, `find_goal_status` | self | self | org | — | all |
-| Payslips ⚠️ | `find_payslips`, `find_payslip_summary`, `find_payslip_details` | self | self | self | self | self (see payroll-viewer-skill) |
+| Payslips ⚠️ | `find_payslips`, `find_payslip_summary`, `find_payslip_details` | self | self | self | own + pay group | all (see payroll-viewer-skill) |
 | Benefits | `find_latest_employee_enrollment_event`, `get_employee_enrollment_history`, `view_benefits_dependent` ⚠️ | self | self | — | — | all |
 | Personal data reads | `find_worker_legal_name` ⚠️, `find_detailed_personal_information_change_event` | self | self | — | — | all |
 | Writes (15, staged BP) | `create_*` / `update_*` / `edit_*` / `submit_*` (time off, personal info, home contact, goals) | self | self | — | — | self |
@@ -102,15 +102,18 @@ Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a wri
 ### payroll-viewer-skill (26 tools: 22 new, 4 shared; all reads)
 | Group | worker_self | manager | hr_partner | payroll_viewer | admin |
 |---|---|---|---|---|---|
-| Own pay (9): `find_payslips` ⚠️, `find_payslip_summary` ⚠️, `find_worker_next_payroll_payment_date`, `find_tax_form_box_details` ⚠️, `list_countries_for_worker_year_end_tax_documents`, `list_report_types_for_worker_year_end_tax_documents`, `list_companies_for_worker_year_end_tax_documents`, `list_countries_for_worker_pay_group`, `list_companies_for_worker` | self | self | self | self | self |
+| Payslips: `find_payslips` ⚠️, `find_payslip_summary` ⚠️ (and `find_payslip_details` ⚠️, self-service-skill) | self | self | self | own + workers in own pay group(s) | all |
+| Other own pay (7): `find_worker_next_payroll_payment_date`, `find_tax_form_box_details` ⚠️, `list_countries_for_worker_year_end_tax_documents`, `list_report_types_for_worker_year_end_tax_documents`, `list_companies_for_worker_year_end_tax_documents`, `list_countries_for_worker_pay_group`, `list_companies_for_worker` | self | self | self | self | self |
 | Pay group tools (13): `find_pay_groups`, `find_pay_group_details`, run category / pay run group selection / off-cycle prompts, `payroll_payroll_results_for_pay_group_detail_and_period_prompt` ⚠️, calculation status prompts, the 4 retro lists | — | — | — | pay-group proof | all |
 | `find_payroll_inputs` ⚠️, `payroll_input_types_prompt` | — | — | — | pay group | all |
 | `list_request_payroll_input_workers` ⚠️, `list_request_payroll_input_pay_components` (shared, unchanged) | — | team | org | pay group | all |
 | Writes | none: `request_payroll_input`, `create_payroll_inputs`, `edit_payroll_inputs` and retro launch are never granted through this skill | | | | |
 
-- **self** for own pay is enforced for every role, admin included: `contextInstanceId` must be `"me"` or the caller's WID. Any other worker id, and a missing one, is refused before the call; `targetInScope`, team or org proofs never widen it. `find_payslip_details` (self-service-skill) is aligned with it.
+- **Payslips** (user decision): every role reads its own; `worker_self`, `manager` and `hr_partner` are self-only. `payroll_viewer` may read another worker's payslips only when that worker is in a pay group the caller can see: preferably a `WorkerPayGroupProof` from `verifyWorkerInPayGroupScope(session, worker, listWorkerPayGroupIds)` (the worker's pay group must be one listed by `find_pay_groups` / `find_pay_group_details` in the same session, same caller), otherwise the existing pay-group membership check (`targetInScope: true`, supplied by caller code). Admin reads all payslips.
+- ⚠️ **Caveat:** Workday's own native payslip tools are self-service server-side: even with these grants the tenant still returns only the caller's own payslips through `find_payslips` / `find_payslip_summary` / `find_payslip_details`, until a payroll-admin data source (e.g. a RaaS report or Payroll API) or a Custom Agent Action exists for this. The grants are the policy the external layer enforces once such a source is wired in.
+- **self** for the other own-pay tools is enforced for every role, admin included: `contextInstanceId` must be `"me"` or the caller's WID. Any other worker id, and a missing one, is refused before the call; `targetInScope`, team or org proofs never widen it.
 - **pay-group proof**: a `PayGroupSession` from `openPayGroupSession(callerWid, sessionId)` in `src/rbac/pay-group-scope.ts`. Only IDs returned by `find_pay_groups` / `find_pay_group_details` can be recorded on it (`recordListedPayGroups`), it is bound to the caller and the session, has a 15 min TTL, and only that module can mint it. A pay group or pay group detail ID (`payGroupId`, or `contextInstanceId`) is accepted for `payroll_viewer` only if it was listed earlier in the same session. Omitting the ID (a list call) is allowed, because Workday returns only the pay groups the caller may view. A bare `targetInScope: true` is refused. Admin is exempt (full read).
-- **Pay results shaping** (`src/safety/pay-results.ts`): results for a pay group detail and period are returned as a summary (result count + count per status, period dates). Worker-level lines go only to `payroll_viewer` when the request sets `explicitDetail: true`. Every other role, admin included, gets the summary.
+- **Pay results shaping** (`src/safety/pay-results.ts`): results for a pay group detail and period are returned as a summary (result count + count per status, period dates). Worker-level lines go only to `payroll_viewer` or `admin` when the request sets `explicitDetail: true`. Every other role gets the summary.
 
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |

@@ -3,15 +3,15 @@
  *
  * Rule (payroll-viewer-skill, "Pay Results by Group and Period"): present results as a summary
  * (pay group, period dates, result count, statuses). Do not expand individual worker-level pay
- * lines unless the caller is a payroll viewer and asks explicitly.
+ * lines unless the caller is a payroll viewer (or admin) and asks explicitly.
  *
  * This module is the ONLY place in the external layer that may turn
  * payroll_payroll_results_for_pay_group_detail_and_period_prompt output into a response:
  *   - default: summary only (result count + count per calculation status); no worker ids,
  *     names or amounts leave this function
- *   - worker-level lines only when the caller holds payroll_viewer AND the request sets
+ *   - worker-level lines only when the caller holds payroll_viewer or admin AND the request sets
  *     `explicitDetail: true` (the user asked for line detail in this request; never inferred)
- *   - every other role, admin included, gets the summary
+ *   - every other role gets the summary
  * RBAC: the call is checked with assertAgentReadyCallAllowed first, so the pay group detail ID
  * still needs the pay-group proof (src/rbac/pay-group-scope.ts) for payroll_viewer.
  */
@@ -51,9 +51,12 @@ export type PayResultsInput = {
   lines: readonly PayResultLine[];
 };
 
-/** Worker-level lines: payroll_viewer + explicit request only. */
+/** Roles that may receive worker-level lines (on explicit request only). */
+export const PAY_RESULT_LINE_ROLES: readonly Role[] = ["payroll_viewer", "admin"];
+
+/** Worker-level lines: payroll_viewer or admin + explicit request only. */
 export function mayReturnPayResultLines(roles: readonly Role[], request: PayResultsRequest = {}): boolean {
-  return roles.includes("payroll_viewer") && request.explicitDetail === true;
+  return roles.some((r) => PAY_RESULT_LINE_ROLES.includes(r)) && request.explicitDetail === true;
 }
 
 /** Pure shaping. Summary carries counts and statuses only. */
@@ -78,9 +81,9 @@ export function shapePayResults(roles: readonly Role[], request: PayResultsReque
     linesWithheld:
       input.lines.length === 0
         ? null
-        : roles.includes("payroll_viewer")
+        : roles.some((r) => PAY_RESULT_LINE_ROLES.includes(r))
           ? "Worker-level lines are shown only when you explicitly ask for them."
-          : "Worker-level pay lines are available to payroll viewers only.",
+          : "Worker-level pay lines are available to payroll viewers and admins only.",
   };
 }
 

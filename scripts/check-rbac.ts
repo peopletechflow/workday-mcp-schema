@@ -17,6 +17,7 @@ import {
   openPayGroupSession,
   recordListedPayGroups,
   isPayGroupListed,
+  verifyWorkerInPayGroupScope,
   ROLES,
   TOOL_PERMISSIONS,
   type AgentReadyCallContext,
@@ -49,6 +50,7 @@ import {
   PAYROLL_VIEWER_DISCOVERY_SOURCE,
   PAYROLL_VIEWER_DECLINED_WRITES,
   PAYROLL_SELF_ONLY_TOOLS,
+  PAYSLIP_TOOLS,
   PAY_GROUP_TOOLS,
   PAYROLL_INPUT_VIEW_TOOLS,
 } from "../src/agent-ready/index.js";
@@ -239,9 +241,10 @@ check("payroll_viewer: only payroll-viewer-skill tools + payroll-input lookups, 
   denied(["payroll_viewer"], "find_payroll_inputs", { contextInstanceId: OTHER_WID });
   denied(["payroll_viewer"], "request_payroll_input", { ...ME_CONFIRMED, payrollDomain: true, targetInScope: true });
   for (const n of PAYSLIPS) {
-    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "self") throw new Error(`${n} not self`);
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "pay_group") throw new Error(`${n} not pay_group`);
     allowed(["payroll_viewer"], n, { contextInstanceId: "me" });
-    denied(["payroll_viewer"], n, OTHER_IN_SCOPE); // payslips are self-service only
+    allowed(["payroll_viewer"], n, OTHER_IN_SCOPE); // fallback: existing pay-group membership check
+    denied(["payroll_viewer"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID }); // not checked
   }
   const ok = new Set<string>([...PV_ALL, ...PAYROLL_INPUT_READS, "find_payslip_details"]);
   for (const n of [...Object.keys(AGENT_READY_TOOL_PERMISSIONS), ...Object.keys(AGENT_READY_RECIPE_PERMISSIONS)]) {
@@ -249,9 +252,10 @@ check("payroll_viewer: only payroll-viewer-skill tools + payroll-input lookups, 
     denied(["payroll_viewer"], n, { contextInstanceId: "me", targetInScope: true, previewConfirmed: true });
   }
 });
-check("admin: full read on every tenant tool and recipe, any target (except self-only own-pay tools)", () => {
+check("admin: full read on every tenant tool and recipe (payslips included), any target, except self-only own-pay tools", () => {
+  for (const n of PAYSLIPS) if (AGENT_READY_TOOL_PERMISSIONS[n]?.admin !== "all") throw new Error(`${n} admin not all`);
   for (const n of [...Object.keys(AGENT_READY_TOOL_PERMISSIONS), ...Object.keys(AGENT_READY_RECIPE_PERMISSIONS)]) {
-    if (PV_SELF.includes(n) || n === "find_payslip_details") {
+    if (PV_SELF.includes(n)) {
       if (allowed(["admin"], n, { contextInstanceId: "me" }) !== "self") throw new Error(`${n} admin not self`);
       denied(["admin"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID });
       continue;
@@ -519,7 +523,9 @@ check("payroll-viewer catalog: 26 tools (22 new + 4 deduped), all reads, wid nul
     if (t.source !== PAYROLL_VIEWER_DISCOVERY_SOURCE || t.wid !== null) throw new Error(`${t.name} source/wid`);
     if (t.readOnly !== true || t.kind !== "basic" || t.operationType !== "VIEW" || t.businessProcess) throw new Error(`${t.name} not a read`);
   }
-  const groups = [...PV_SELF, ...PV_PAY_GROUP, ...PAYROLL_INPUT_VIEW_TOOLS];
+  const groups = [...PV_SELF, "find_payslips", "find_payslip_summary", ...PV_PAY_GROUP, ...PAYROLL_INPUT_VIEW_TOOLS];
+  if ([...PAYSLIP_TOOLS].sort().join() !== [...PAYSLIPS].sort().join()) throw new Error("PAYSLIP_TOOLS");
+  if (PV_SELF.length !== 7 || PV_SELF.some((n) => PAYSLIPS.includes(n))) throw new Error(`self-only ${PV_SELF}`);
   if (groups.length !== 26 || [...groups].sort().join() !== [...tagged].sort().join()) throw new Error("RBAC groups != skill tools");
 });
 check("payroll-viewer: no write tool, no write grant; request_payroll_input / payroll writes not granted via the skill", () => {
@@ -551,6 +557,40 @@ check("self-only payroll tools: every role reads own record; another worker id i
       denied([r], n, {}); // no worker id at all: fail closed
     }
     denied([...ROLES], n, { ...OTHER_IN_SCOPE, teamScope: TEAM });
+  }
+});
+const workerPayGroups: Record<string, string[]> = { w_pg: ["pg-2"], w_nopg: ["pg-elsewhere"] };
+const listWorkerPayGroups = async (w: string) => workerPayGroups[w] ?? [];
+const PG_WORKER_PROOF = await verifyWorkerInPayGroupScope(PG_SESSION, "w_pg", listWorkerPayGroups);
+let pgOutsideRefused = false;
+try { await verifyWorkerInPayGroupScope(PG_SESSION, "w_nopg", listWorkerPayGroups); } catch { pgOutsideRefused = true; }
+const PGW = (target: string, extra: AgentReadyCallContext = {}): AgentReadyCallContext => ({
+  contextInstanceId: target, callerWid: SELF_WID, sessionId: "sess-1", workerPayGroupProof: PG_WORKER_PROOF, ...extra,
+});
+check("payslips: own for every role; payroll_viewer other workers only in its pay groups (session proof or membership check); admin all", () => {
+  if (!pgOutsideRefused) throw new Error("worker outside listed pay groups got a proof");
+  for (const n of PAYSLIPS) {
+    const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
+    if (g.worker_self !== "self" || g.manager !== "self" || g.hr_partner !== "self" || g.payroll_viewer !== "pay_group" || g.admin !== "all") {
+      throw new Error(`${n} grants ${JSON.stringify(g)}`);
+    }
+    for (const r of ROLES) allowed([r], n, { contextInstanceId: "me" });
+    // payroll_viewer: session proof
+    if (allowed(["payroll_viewer"], n, PGW("w_pg")) !== "pay_group") throw new Error(`${n} proof not accepted`);
+    denied(["payroll_viewer"], n, PGW("w_nopg")); // proof is for another worker
+    denied(["payroll_viewer"], n, PGW("w_pg", { callerWid: "someone-else" }));
+    denied(["payroll_viewer"], n, PGW("w_pg", { sessionId: "sess-2" }));
+    denied(["payroll_viewer"], n, PGW("w_pg", { workerPayGroupProof: { callerWid: SELF_WID, sessionId: "sess-1", workerWid: "w_pg", viaPayGroupId: "pg-2", expiresAt: Date.now() + 1e6 } })); // forged
+    denied(["payroll_viewer"], n, PG("pg-2", { contextInstanceId: "w_pg" })); // a pay group listing alone is not a worker proof
+    // payroll_viewer: fallback membership check
+    allowed(["payroll_viewer"], n, OTHER_IN_SCOPE);
+    denied(["payroll_viewer"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID, targetInScope: false });
+    // worker_self / manager / hr_partner: self only, proofs never widen it
+    for (const r of ["worker_self", "manager", "hr_partner"] as Role[]) {
+      denied([r], n, PGW("w_pg", { targetInScope: true, teamScope: TEAM, orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN }));
+      denied([r], n, { ...TEAM_CTX("r1"), targetInScope: true });
+    }
+    if (allowed(["admin"], n, { contextInstanceId: OTHER_WID }) !== "all") throw new Error(`${n} admin not all`);
   }
 });
 check("worker_self can read its own payslips (and nothing pay-group / payroll-input)", () => {
@@ -605,14 +645,17 @@ const PR_LINES: PayResultLine[] = [
   { workerId: "w2", workerName: "Bob", status: "Complete", net: 2900 },
   { workerId: "w3", workerName: "Cy", status: "Error", net: 0 },
 ];
-check("pay results shaping: summary (count + statuses) unless payroll_viewer explicitly asks for detail", () => {
+check("pay results shaping: summary (count + statuses) unless payroll_viewer or admin explicitly asks for detail", () => {
   const input = { payGroupDetailId: "pgd-1", periodId: "per-1", periodStart: "2026-10-01", periodEnd: "2026-10-31", lines: PR_LINES };
   const sum = shapePayResults(["payroll_viewer"], {}, input);
   if (sum.mode !== "summary" || sum.resultCount !== 3 || sum.statuses.map((s) => `${s.status}:${s.count}`).join() !== "Complete:2,Error:1") throw new Error(JSON.stringify(sum));
   if (/w1|Ann|3100/.test(JSON.stringify(sum))) throw new Error("worker-level data in summary");
   const det = shapePayResults(["payroll_viewer"], { explicitDetail: true }, input);
   if (det.mode !== "detail" || det.lines.length !== 3) throw new Error("detail not returned");
-  for (const roles of [["admin"], ["manager"], ["hr_partner"], ["worker_self"]] as Role[][]) {
+  const adm = shapePayResults(["admin"], { explicitDetail: true }, input);
+  if (adm.mode !== "detail" || adm.lines.length !== 3) throw new Error("admin detail not returned");
+  if (shapePayResults(["admin"], {}, input).mode !== "summary") throw new Error("admin got lines without asking");
+  for (const roles of [["manager"], ["hr_partner"], ["worker_self"]] as Role[][]) {
     const r = shapePayResults(roles, { explicitDetail: true }, input);
     if (r.mode !== "summary" || /w1|Ann/.test(JSON.stringify(r))) throw new Error(`${roles} got lines`);
   }
@@ -888,7 +931,9 @@ await (async () => {
     await expectThrow(() => getPayResults(["manager"], { ...PG("pgd-1"), payGroupId: "pgd-1" }, "per-1", {}, adapter), "manager");
     if (fetched.join() !== "pgd-1") throw new Error(`fetched before RBAC: ${fetched}`);
     const a = await getPayResults(["admin"], { payGroupId: "pgd-any" }, "per-1", { explicitDetail: true }, adapter);
-    if (a.mode !== "summary") throw new Error("admin got lines");
+    if (a.mode !== "detail") throw new Error("admin explicit detail not returned");
+    const a2 = await getPayResults(["admin"], { payGroupId: "pgd-any" }, "per-1", {}, adapter);
+    if (a2.mode !== "summary") throw new Error("admin got lines without asking");
   });
 })();
 
