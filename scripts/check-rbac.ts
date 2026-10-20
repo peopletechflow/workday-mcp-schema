@@ -14,6 +14,9 @@ import {
   verifyWorkerInOrgScope,
   filterToOrgScope,
   ORG_PROOF_REQUIRED,
+  openPayGroupSession,
+  recordListedPayGroups,
+  isPayGroupListed,
   ROLES,
   TOOL_PERMISSIONS,
   type AgentReadyCallContext,
@@ -40,6 +43,14 @@ import {
   TENANT_DISCOVERED_TOOLS,
   TENANT_DISCOVERY_SOURCE,
   WORKER_DATA_SKILL_TOOLS,
+  PAYROLL_VIEWER_SKILL,
+  PAYROLL_VIEWER_SKILL_TOOLS,
+  PAYROLL_VIEWER_SHARED_TOOLS,
+  PAYROLL_VIEWER_DISCOVERY_SOURCE,
+  PAYROLL_VIEWER_DECLINED_WRITES,
+  PAYROLL_SELF_ONLY_TOOLS,
+  PAY_GROUP_TOOLS,
+  PAYROLL_INPUT_VIEW_TOOLS,
 } from "../src/agent-ready/index.js";
 import {
   commitNativeWrite,
@@ -50,6 +61,7 @@ import {
 import { PreviewStore } from "../src/safety/preview-store.js";
 import { IdempotencyStore } from "../src/safety/idempotency.js";
 import { aggregateBuckets, computeDiversityAggregate } from "../src/safety/diversity.js";
+import { getPayResults, shapePayResults, type PayResultLine } from "../src/safety/pay-results.js";
 
 let failed = 0;
 const check = (name: string, fn: () => void) => {
@@ -80,6 +92,10 @@ const ME_CONFIRMED: AgentReadyCallContext = { contextInstanceId: "me", previewCo
 const SS_READS = SELF_SERVICE_SKILL_TOOLS.filter((t) => t.readOnly).map((t) => t.name);
 const SS_WRITES = SELF_SERVICE_SKILL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name);
 const PAYSLIPS = ["find_payslips", "find_payslip_summary", "find_payslip_details"];
+const PV_TOOLS = PAYROLL_VIEWER_SKILL_TOOLS.map((t) => t.name);
+const PV_ALL = [...PV_TOOLS, ...PAYROLL_VIEWER_SHARED_TOOLS];
+const PV_SELF = [...PAYROLL_SELF_ONLY_TOOLS] as string[];
+const PV_PAY_GROUP = [...PAY_GROUP_TOOLS] as string[];
 const HR_ORG_READS = [
   "find_absence_balances", "find_worker_time_off_details", "find_worker_eligible_absence_types", "find_worker_valid_time_off_dates",
   "find_business_process_tasks", "find_plan_assignments", "get_learning_content", "find_learning_transcript",
@@ -128,9 +144,9 @@ const HR_PROOF_IN = await verifyWorkerInOrgScope(HR_SCOPE, "w_in", listWorkerOrg
 const HR_W = (target: string, extra: AgentReadyCallContext = {}): AgentReadyCallContext => ({
   contextInstanceId: target, callerWid: SELF_WID, orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN, ...extra,
 });
-const HR_EXCLUDED = [...PAYSLIPS, "find_latest_employee_enrollment_event", "get_employee_enrollment_history", "view_benefits_dependent"];
+const HR_EXCLUDED = ["find_latest_employee_enrollment_event", "get_employee_enrollment_history", "view_benefits_dependent"];
 
-check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-partner tools, seeds kept, deduped", () => {
+check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-partner + 22 payroll-viewer tools, seeds kept, deduped", () => {
   if (HR_PARTNER_SKILL_TOOLS.length !== 21 || HR_READS.length !== 10 || HR_WRITES.length !== 11) {
     throw new Error(`hr-partner ${HR_PARTNER_SKILL_TOOLS.length} r${HR_READS.length} w${HR_WRITES.length}`);
   }
@@ -145,7 +161,10 @@ check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-pa
   if (SS_READS.length !== 19 || SS_WRITES.length !== 15) throw new Error(`reads ${SS_READS.length} writes ${SS_WRITES.length}`);
   const names = AGENT_READY_CATALOG.tools.map((t) => t.name);
   if (new Set(names).size !== names.length) throw new Error("duplicate catalog names");
-  if (names.length !== 115 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
+  if (names.length !== 137 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
+  // reads = Basic + Prompt, writes = Advanced (some seed rows leave readOnly unset)
+  const writes = AGENT_READY_CATALOG.tools.filter((t) => t.kind === "advanced").length;
+  if (names.length - writes !== 104 || writes !== 33) throw new Error(`reads ${names.length - writes} writes ${writes}`);
   for (const t of TENANT_DISCOVERED_TOOLS) if (!names.includes(t.name)) throw new Error(`missing ${t.name}`);
   if (!names.includes("getTimeOffEntries")) throw new Error("public seed dropped");
   const shared = WORKER_DATA_SKILL_TOOLS.filter((t) => t.skills?.includes("self-service-skill")).map((t) => t.name);
@@ -190,6 +209,7 @@ check("sensitive flags: personal info, addresses, payslips, dependents, legal na
     "find_worker_history_events", "find_expense_lines", "find_worker_anytime_feedback_received", "request_payroll_input",
     "list_request_payroll_input_workers",
     "list_worker_history_events", ...SPECIAL,
+    "find_payroll_inputs", "payroll_payroll_results_for_pay_group_detail_and_period_prompt", "find_tax_form_box_details",
   ];
   if ([...SENSITIVE_TENANT_TOOLS].sort().join() !== want.sort().join()) throw new Error(`got ${SENSITIVE_TENANT_TOOLS}`);
   for (const n of SENSITIVE_TENANT_TOOLS.filter((x) => ![...MA_READS, ...MA_WRITES, ...HR_READS, ...HR_WRITES].includes(x))) {
@@ -207,24 +227,35 @@ check("worker-data sensitive: never manager; worker_self(self) + hr_partner only
     allowed(["hr_partner"], n, OTHER_IN_SCOPE);
   }
 });
-check("payroll_viewer: only payslips + payroll-input lookups, pay-group scope, never writes", () => {
-  for (const n of PAYROLL_INPUT_READS) if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "pay_group") throw new Error(`${n} not pay_group`);
+check("payroll_viewer: only payroll-viewer-skill tools + payroll-input lookups, never writes", () => {
+  for (const n of [...PAYROLL_INPUT_READS, ...PAYROLL_INPUT_VIEW_TOOLS]) {
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "pay_group") throw new Error(`${n} not pay_group`);
+  }
   allowed(["payroll_viewer"], "list_request_payroll_input_workers", { targetInScope: true });
   denied(["payroll_viewer"], "list_request_payroll_input_workers", {}); // pay group not checked
   allowed(["payroll_viewer"], "list_request_payroll_input_pay_components", {});
+  allowed(["payroll_viewer"], "payroll_input_types_prompt", {});
+  allowed(["payroll_viewer"], "find_payroll_inputs", OTHER_IN_SCOPE);
+  denied(["payroll_viewer"], "find_payroll_inputs", { contextInstanceId: OTHER_WID });
   denied(["payroll_viewer"], "request_payroll_input", { ...ME_CONFIRMED, payrollDomain: true, targetInScope: true });
   for (const n of PAYSLIPS) {
-    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "pay_group") throw new Error(`${n} not pay_group`);
-    allowed(["payroll_viewer"], n, OTHER_IN_SCOPE);
-    denied(["payroll_viewer"], n, { contextInstanceId: OTHER_WID }); // pay-group check not done
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer !== "self") throw new Error(`${n} not self`);
+    allowed(["payroll_viewer"], n, { contextInstanceId: "me" });
+    denied(["payroll_viewer"], n, OTHER_IN_SCOPE); // payslips are self-service only
   }
+  const ok = new Set<string>([...PV_ALL, ...PAYROLL_INPUT_READS, "find_payslip_details"]);
   for (const n of [...Object.keys(AGENT_READY_TOOL_PERMISSIONS), ...Object.keys(AGENT_READY_RECIPE_PERMISSIONS)]) {
-    if (PAYSLIPS.includes(n) || PAYROLL_INPUT_READS.includes(n)) continue;
+    if (ok.has(n)) continue;
     denied(["payroll_viewer"], n, { contextInstanceId: "me", targetInScope: true, previewConfirmed: true });
   }
 });
-check("admin: full read on every tenant tool and recipe, any target", () => {
+check("admin: full read on every tenant tool and recipe, any target (except self-only own-pay tools)", () => {
   for (const n of [...Object.keys(AGENT_READY_TOOL_PERMISSIONS), ...Object.keys(AGENT_READY_RECIPE_PERMISSIONS)]) {
+    if (PV_SELF.includes(n) || n === "find_payslip_details") {
+      if (allowed(["admin"], n, { contextInstanceId: "me" }) !== "self") throw new Error(`${n} admin not self`);
+      denied(["admin"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID });
+      continue;
+    }
     if (isAgentReadyWrite(n)) {
       const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
       if (g.admin !== "self" && g.admin !== "actor_self") throw new Error(`${n}: admin write not self-scoped`);
@@ -263,7 +294,8 @@ check("hr_partner: org-scope time off/inbox/learning/goals; no payslips/benefits
     allowed(["hr_partner"], n, OTHER_IN_SCOPE);
     if (!isNoneTarget(n)) denied(["hr_partner"], n, { contextInstanceId: OTHER_WID });
   }
-  for (const n of [...HR_EXCLUDED, "find_worker_legal_name"]) denied(["hr_partner"], n, OTHER_IN_SCOPE);
+  for (const n of [...HR_EXCLUDED, ...PAYSLIPS, "find_worker_legal_name"]) denied(["hr_partner"], n, OTHER_IN_SCOPE);
+  for (const n of HR_EXCLUDED) denied(["hr_partner"], n, { contextInstanceId: "me" });
 });
 check("worker_self: 'me' or own WID only (worker-data)", () => {
   allowed(["worker_self"], "find_staffing_workers", { contextInstanceId: "me" });
@@ -469,6 +501,122 @@ check("diversity recipe: hr_partner (org proof) + admin only", () => {
   for (const r of ["worker_self", "manager", "payroll_viewer"] as Role[]) {
     denied([r], "aggregate_diversity", { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE, teamScope: TEAM });
   }
+});
+
+// ---- payroll-viewer-skill ----
+const PG_SESSION = openPayGroupSession(SELF_WID, "sess-1");
+recordListedPayGroups(PG_SESSION, "find_pay_groups", ["pg-1", "pg-2"]);
+recordListedPayGroups(PG_SESSION, "find_pay_group_details", ["pgd-1"]);
+const PG = (id: string | undefined, extra: AgentReadyCallContext = {}): AgentReadyCallContext => ({
+  payGroupId: id, callerWid: SELF_WID, sessionId: "sess-1", payGroupSession: PG_SESSION, ...extra,
+});
+check("payroll-viewer catalog: 26 tools (22 new + 4 deduped), all reads, wid null, tagged", () => {
+  if (PAYROLL_VIEWER_SKILL_TOOLS.length !== 22 || PAYROLL_VIEWER_SHARED_TOOLS.length !== 4) throw new Error("counts");
+  const tagged = TENANT_DISCOVERED_TOOLS.filter((t) => t.skills?.includes(PAYROLL_VIEWER_SKILL)).map((t) => t.name);
+  if (tagged.length !== 26 || new Set(tagged).size !== 26) throw new Error(`tagged ${tagged.length}`);
+  for (const n of PAYROLL_VIEWER_SHARED_TOOLS) if (PAYROLL_VIEWER_SKILL_TOOLS.some((t) => t.name === n)) throw new Error(`${n} duplicated`);
+  for (const t of PAYROLL_VIEWER_SKILL_TOOLS) {
+    if (t.source !== PAYROLL_VIEWER_DISCOVERY_SOURCE || t.wid !== null) throw new Error(`${t.name} source/wid`);
+    if (t.readOnly !== true || t.kind !== "basic" || t.operationType !== "VIEW" || t.businessProcess) throw new Error(`${t.name} not a read`);
+  }
+  const groups = [...PV_SELF, ...PV_PAY_GROUP, ...PAYROLL_INPUT_VIEW_TOOLS];
+  if (groups.length !== 26 || [...groups].sort().join() !== [...tagged].sort().join()) throw new Error("RBAC groups != skill tools");
+});
+check("payroll-viewer: no write tool, no write grant; request_payroll_input / payroll writes not granted via the skill", () => {
+  for (const n of PV_ALL) {
+    if (isAgentReadyWrite(n)) throw new Error(`${n} is a write`);
+    for (const d of Object.values(NATIVE_WRITE_FLOWS)) if ([d.open, ...d.stage, ...(d.reads ?? []), d.submit].includes(n)) throw new Error(`${n} in a write flow`);
+  }
+  for (const n of PAYROLL_VIEWER_DECLINED_WRITES) {
+    const t = AGENT_READY_CATALOG.tools.find((x) => x.name === n);
+    if (t?.skills?.includes(PAYROLL_VIEWER_SKILL)) throw new Error(`${n} tagged with payroll-viewer-skill`);
+    if (t && t.readOnly !== false) throw new Error(`${n} not a write`);
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.payroll_viewer) throw new Error(`${n} granted to payroll_viewer`);
+    denied(["payroll_viewer"], n, { ...ME_CONFIRMED, payrollDomain: true, targetInScope: true });
+  }
+  for (const n of ["create_payroll_inputs", "edit_payroll_inputs"]) if (AGENT_READY_CATALOG.tools.some((t) => t.name === n)) throw new Error(`${n} catalogued`);
+  for (const [n, g] of Object.entries(AGENT_READY_TOOL_PERMISSIONS)) if (isAgentReadyWrite(n) && g.payroll_viewer) throw new Error(`${n}: payroll_viewer write`);
+});
+check("self-only payroll tools: every role reads own record; another worker id is rejected", () => {
+  for (const n of PV_SELF) {
+    const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
+    if (ROLES.some((r) => g[r] !== "self")) throw new Error(`${n}: not self for every role ${JSON.stringify(g)}`);
+    if (targetKindFor(n) !== "worker") throw new Error(`${n} target ${targetKindFor(n)}`);
+    for (const r of ROLES) {
+      allowed([r], n, { contextInstanceId: "me" });
+      allowed([r], n, { contextInstanceId: SELF_WID, callerWid: SELF_WID });
+      denied([r], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID });
+      denied([r], n, OTHER_IN_SCOPE); // targetInScope never widens a self-only tool
+      denied([r], n, { ...TEAM_CTX("r1"), ...PG("pg-1"), orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN });
+      denied([r], n, {}); // no worker id at all: fail closed
+    }
+    denied([...ROLES], n, { ...OTHER_IN_SCOPE, teamScope: TEAM });
+  }
+});
+check("worker_self can read its own payslips (and nothing pay-group / payroll-input)", () => {
+  for (const n of ["find_payslips", "find_payslip_summary"]) {
+    if (allowed(["worker_self"], n, { contextInstanceId: "me" }) !== "self") throw new Error(n);
+    allowed(["worker_self"], n, { contextInstanceId: SELF_WID, callerWid: SELF_WID });
+    denied(["worker_self"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID });
+  }
+  for (const n of [...PV_PAY_GROUP, ...PAYROLL_INPUT_VIEW_TOOLS]) denied(["worker_self"], n, { ...PG(undefined), contextInstanceId: "me" });
+});
+check("pay group proof: listed IDs accepted; unlisted / other caller / other session / forged refused; admin exempt", () => {
+  if (!isPayGroupListed(PG_SESSION, "pg-1", SELF_WID, "sess-1")) throw new Error("listed id not accepted");
+  for (const n of PV_PAY_GROUP) {
+    if (targetKindFor(n) !== "pay_group") throw new Error(`${n} target ${targetKindFor(n)}`);
+    const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
+    if (Object.keys(g).sort().join() !== "admin,payroll_viewer" || g.payroll_viewer !== "pay_group" || g.admin !== "all") throw new Error(`${n} grants`);
+    allowed(["payroll_viewer"], n, PG(undefined)); // list call
+    allowed(["payroll_viewer"], n, PG("pg-2"));
+    allowed(["payroll_viewer"], n, PG("pgd-1"));
+    allowed(["payroll_viewer"], n, { ...PG(undefined), contextInstanceId: "pg-1" }); // contextInstanceId as pay group id
+    denied(["payroll_viewer"], n, PG("pg-unlisted"));
+    denied(["payroll_viewer"], n, { ...PG(undefined), contextInstanceId: "pg-unlisted" });
+    denied(["payroll_viewer"], n, PG(""));
+    denied(["payroll_viewer"], n, PG("pg-1", { targetInScope: true, payGroupSession: undefined })); // boolean not accepted
+    denied(["payroll_viewer"], n, PG("pg-1", { callerWid: "someone-else" }));
+    denied(["payroll_viewer"], n, PG("pg-1", { sessionId: "sess-2" }));
+    denied(["payroll_viewer"], n, PG("pg-1", { payGroupSession: { callerWid: SELF_WID, sessionId: "sess-1", expiresAt: Date.now() + 1e6 } })); // forged
+    if (allowed(["admin"], n, { payGroupId: "pg-unlisted" }) !== "all") throw new Error(`${n} admin not exempt`);
+    allowed(["admin"], n, { contextInstanceId: "any-pay-group" });
+  }
+  const other = openPayGroupSession(SELF_WID, "sess-2");
+  denied(["payroll_viewer"], "find_pay_group_details", PG("pg-1", { sessionId: "sess-2", payGroupSession: other })); // listed in another session
+  try { recordListedPayGroups(PG_SESSION, "list_retro_results_pay_run_group_selections", ["pg-x"]); throw new Error("non-listing tool recorded"); }
+  catch (e) { if (!(e instanceof Error) || e.message === "non-listing tool recorded") throw e; }
+  const expired = openPayGroupSession(SELF_WID, "sess-3", Date.now() - 1e8);
+  try { recordListedPayGroups(expired, "find_pay_groups", ["pg-1"]); throw new Error("expired session recorded"); }
+  catch (e) { if (!(e instanceof Error) || e.message === "expired session recorded") throw e; }
+  denied(["payroll_viewer"], "find_pay_groups", PG("pg-1", { sessionId: "sess-3", payGroupSession: expired }));
+});
+check("manager and hr_partner cannot call the pay group tools (or the new payroll input reads)", () => {
+  for (const n of [...PV_PAY_GROUP, "find_payroll_inputs", "payroll_input_types_prompt"]) {
+    const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
+    if (g.manager || g.hr_partner || g.worker_self) throw new Error(`${n} granted beyond payroll_viewer/admin`);
+    for (const r of ["manager", "hr_partner"] as Role[]) {
+      denied([r], n, { ...PG(undefined), contextInstanceId: undefined });
+      denied([r], n, { ...PG("pg-1"), ...TEAM_CTX("r1"), orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN, targetInScope: true });
+    }
+  }
+});
+const PR_LINES: PayResultLine[] = [
+  { workerId: "w1", workerName: "Ann", status: "Complete", net: 3100 },
+  { workerId: "w2", workerName: "Bob", status: "Complete", net: 2900 },
+  { workerId: "w3", workerName: "Cy", status: "Error", net: 0 },
+];
+check("pay results shaping: summary (count + statuses) unless payroll_viewer explicitly asks for detail", () => {
+  const input = { payGroupDetailId: "pgd-1", periodId: "per-1", periodStart: "2026-10-01", periodEnd: "2026-10-31", lines: PR_LINES };
+  const sum = shapePayResults(["payroll_viewer"], {}, input);
+  if (sum.mode !== "summary" || sum.resultCount !== 3 || sum.statuses.map((s) => `${s.status}:${s.count}`).join() !== "Complete:2,Error:1") throw new Error(JSON.stringify(sum));
+  if (/w1|Ann|3100/.test(JSON.stringify(sum))) throw new Error("worker-level data in summary");
+  const det = shapePayResults(["payroll_viewer"], { explicitDetail: true }, input);
+  if (det.mode !== "detail" || det.lines.length !== 3) throw new Error("detail not returned");
+  for (const roles of [["admin"], ["manager"], ["hr_partner"], ["worker_self"]] as Role[][]) {
+    const r = shapePayResults(roles, { explicitDetail: true }, input);
+    if (r.mode !== "summary" || /w1|Ann/.test(JSON.stringify(r))) throw new Error(`${roles} got lines`);
+  }
+  if (shapePayResults(["payroll_viewer"], { explicitDetail: "yes" as unknown as boolean }, input).mode !== "summary") throw new Error("truthy != explicit");
 });
 check("unmapped Agent-Ready tool fails closed", () => denied([...ROLES], "__unmapped_native__", { contextInstanceId: "me" }));
 check("admin role description grants full read (old config-only rule removed)", () => {
@@ -728,6 +876,19 @@ await (async () => {
     if (JSON.stringify(r).match(/p\d/)) throw new Error("per-person id leaked");
     if (r.buckets.map((b) => `${b.bucket}:${b.count}`).join() !== "A:6,B:5" || r.population !== null) throw new Error(JSON.stringify(r));
     await expectThrow(() => computeDiversityAggregate(["manager"], { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE }, adapter), "manager");
+  });
+
+  // ---- payroll-viewer-skill pay results ----
+  await run("pay results: getPayResults checks the pay-group proof before fetching, then shapes", async () => {
+    const fetched: string[] = [];
+    const adapter = { fetch: async (d: string) => { fetched.push(d); return { periodStart: "2026-10-01", periodEnd: "2026-10-31", lines: PR_LINES }; } };
+    const r = await getPayResults(["payroll_viewer"], { ...PG("pgd-1"), payGroupId: "pgd-1" }, "per-1", {}, adapter);
+    if (r.mode !== "summary" || r.resultCount !== 3) throw new Error(JSON.stringify(r));
+    await expectThrow(() => getPayResults(["payroll_viewer"], { ...PG("pgd-x"), payGroupId: "pgd-x" }, "per-1", { explicitDetail: true }, adapter), "unlisted detail");
+    await expectThrow(() => getPayResults(["manager"], { ...PG("pgd-1"), payGroupId: "pgd-1" }, "per-1", {}, adapter), "manager");
+    if (fetched.join() !== "pgd-1") throw new Error(`fetched before RBAC: ${fetched}`);
+    const a = await getPayResults(["admin"], { payGroupId: "pgd-any" }, "per-1", { explicitDetail: true }, adapter);
+    if (a.mode !== "summary") throw new Error("admin got lines");
   });
 })();
 

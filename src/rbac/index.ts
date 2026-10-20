@@ -4,3 +4,4 @@ export * from "./enforce.js";
 export * from "./agent-ready.js";
 export * from "./team-scope.js";
 export * from "./org-scope.js";
+export * from "./pay-group-scope.js";

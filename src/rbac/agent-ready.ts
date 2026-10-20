@@ -12,7 +12,10 @@
  *   self_and_reports self + VERIFIED team: target must be in a TeamScope from
  *                    src/rbac/team-scope.ts (direct + indirect reports, hasManagerRole, cap 5)
  *   supervisory_org  workers/orgs in the caller's supported supervisory orgs (hr_partner)
- *   pay_group        workers in the caller's pay group(s) (payroll_viewer)
+ *   pay_group        workers in the caller's pay group(s) (payroll_viewer). For pay-group targets
+ *                    (payroll-viewer-skill) the pay group / pay group detail ID must be PROVEN by
+ *                    src/rbac/pay-group-scope.ts: returned by an earlier find_pay_groups /
+ *                    find_pay_group_details call for the same caller and session
  *   all              any target Workday security lets the caller see (admin; reads only)
  *
  * Writes (catalog readOnly === false): never "all"; the call must come from
@@ -21,12 +24,17 @@
  * Business-process step actions (approve/deny) additionally require the caller to be the
  * step's awaiting approver (`awaitingApproverWid`, supplied by caller code — like payslip ownership).
  * request_payroll_input additionally requires `payrollDomain: true` (Workday payroll domain).
+ * payroll-viewer-skill is read-only: payslips, next payment date, year-end tax and worker pay
+ * group context are self-only for EVERY role (admin included); worker-level pay result lines are
+ * shaped by src/safety/pay-results.ts (summary unless payroll_viewer explicitly asks for detail).
  */
 import { getByName } from "../agent-ready/registry.js";
 import type { Role } from "./roles.js";
 import { RbacDeniedError } from "./enforce.js";
 import { isInVerifiedTeam, type TeamScope } from "./team-scope.js";
 import { isOrgInScope, isValidOrgScope, isWorkerInOrgScope, type OrgScope, type WorkerOrgProof } from "./org-scope.js";
+import { isPayGroupListed, type PayGroupSession } from "./pay-group-scope.js";
+import { PAY_GROUP_TOOLS, PAYROLL_SELF_ONLY_TOOLS } from "../agent-ready/catalog.tenant.js";
 
 export type AgentReadyScope =
   | "self"
@@ -51,8 +59,12 @@ const WD = (worker: boolean, manager: boolean): AgentReadyGrant => ({
 const SS_ORG_READ: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "supervisory_org", admin: "all" };
 /** Time off reads shared with manager-actions-skill: manager also on verified team. */
 const SS_TEAM_TIME_OFF: AgentReadyGrant = { ...SS_ORG_READ, manager: "self_and_reports" };
-/** Payslips: payroll_viewer reads within pay group; hr_partner excluded (conservative). */
-const SS_PAYSLIP: AgentReadyGrant = { worker_self: "self", manager: "self", payroll_viewer: "pay_group", admin: "all" };
+/**
+ * Payslips / own pay (payroll-viewer-skill): self-service only for EVERY role, admin included.
+ * The skill says payslips are self-service only and Workday enforces it; the server refuses any
+ * worker id other than the caller's before the call.
+ */
+const PV_SELF_ONLY: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "self", payroll_viewer: "self", admin: "self" };
 /** Benefits enrollment, dependents, legal name, personal-info events: self + admin only. */
 const SS_SELF_READ: AgentReadyGrant = { worker_self: "self", manager: "self", admin: "all" };
 /** Writes: self only for every role that may write; hr_partner/payroll_viewer never write. */
@@ -77,6 +89,10 @@ const HR_READ: AgentReadyGrant = { hr_partner: "supervisory_org", admin: "all" }
 /** Org chart reads: manager limited to own team orgs (OrgScope with basis "manager"). */
 const HR_ORG_CHART_READ: AgentReadyGrant = { ...HR_READ, manager: "self_and_reports" };
 const HR_SELF_OR_ORG_WRITE: AgentReadyGrant = { worker_self: "self", hr_partner: "supervisory_org", admin: "self" };
+
+// ---- payroll-viewer-skill (read-only) ----
+/** Pay group tools + new payroll input reads: payroll_viewer (pay-group proof) and admin (full read). */
+const PV_PAY_GROUP_READ: AgentReadyGrant = { payroll_viewer: "pay_group", admin: "all" };
 
 /** Tool name -> role -> scope. Unlisted tool or role = denied (fail closed). */
 export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGrant>> = {
@@ -110,9 +126,8 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   find_continue_learning: SS_ORG_READ,
   list_my_goals: SS_ORG_READ,
   find_goal_status: SS_ORG_READ,
-  find_payslips: SS_PAYSLIP, // sensitive
-  find_payslip_summary: SS_PAYSLIP, // sensitive
-  find_payslip_details: SS_PAYSLIP, // sensitive
+  // payslips: self-only for every role (find_payslips / find_payslip_summary via payroll-viewer-skill below)
+  find_payslip_details: PV_SELF_ONLY, // sensitive; aligned with find_payslip_summary (not in payroll-viewer-skill)
   find_latest_employee_enrollment_event: SS_SELF_READ,
   get_employee_enrollment_history: SS_SELF_READ,
   view_benefits_dependent: SS_SELF_READ, // sensitive
@@ -194,6 +209,16 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
       "submit_government_identifier_changes",
     ].map((n) => [n, HR_SELF_OR_ORG_WRITE]),
   ),
+
+  // payroll-viewer-skill (26 reads, 0 writes). Never grants request_payroll_input or any write.
+  // self-only for every role (9): find_payslips, find_payslip_summary, next payment date, year-end tax, pay group context
+  ...Object.fromEntries(PAYROLL_SELF_ONLY_TOOLS.map((n) => [n, PV_SELF_ONLY])),
+  // pay group tools (13): payroll_viewer with pay-group proof for any supplied ID; admin all
+  ...Object.fromEntries(PAY_GROUP_TOOLS.map((n) => [n, PV_PAY_GROUP_READ])),
+  // payroll input reads: the 2 new ones are payroll_viewer + admin only. list_request_payroll_input_workers /
+  // _pay_components keep their manager-actions grants above (payroll_viewer "pay_group" already).
+  find_payroll_inputs: PV_PAY_GROUP_READ, // sensitive
+  payroll_input_types_prompt: PV_PAY_GROUP_READ,
 };
 
 /** Recipes: roles = intersection of the tools they call, minus worker_self (chains leave self). */
@@ -220,8 +245,11 @@ const SCOPE_RANK: Record<AgentReadyScope, number> = {
  *   caller_list list Workday scopes to the caller (my team / my candidates / eligible workers);
  *               org / pay-group scopes still need targetInScope for the requested filter
  *   org         contextInstanceId = target organization WID (needs an OrgScope containing it)
+ *   pay_group   payGroupId (or contextInstanceId) = pay group / pay group detail WID; omitted =
+ *               list (Workday bounds it to accessible pay groups). A supplied ID needs a
+ *               PayGroupSession proof for payroll_viewer; admin ("all") is exempt
  */
-export type AgentReadyTarget = "worker" | "none" | "caller_list" | "org";
+export type AgentReadyTarget = "worker" | "none" | "caller_list" | "org" | "pay_group";
 
 const NONE_TARGET = [
   "list_organizations", "get_learning_content", "find_goal_status",
@@ -233,6 +261,7 @@ const NONE_TARGET = [
   "list_my_candidate_job_families", "find_worker_performance_review_template",
   "list_request_payroll_input_pay_components", "list_request_payroll_input_event_input_types_for_pay_component",
   "list_leave_event_statuses", "list_time_off_entry_statuses", "find_ethnicity", "find_ethnicity_details",
+  "payroll_input_types_prompt",
 ];
 const ORG_TARGET = ["get_org_chart_children", "get_org_chart_parent", "list_organization_members", "aggregate_diversity"];
 const CALLER_LIST_TARGET = [
@@ -245,6 +274,7 @@ export const AGENT_READY_TOOL_TARGETS: Readonly<Record<string, AgentReadyTarget>
   ...Object.fromEntries(NONE_TARGET.map((n) => [n, "none" as const])),
   ...Object.fromEntries(CALLER_LIST_TARGET.map((n) => [n, "caller_list" as const])),
   ...Object.fromEntries(ORG_TARGET.map((n) => [n, "org" as const])),
+  ...Object.fromEntries(PAY_GROUP_TOOLS.map((n) => [n, "pay_group" as const])),
 };
 
 /**
@@ -317,6 +347,15 @@ export type AgentReadyCallContext = {
   orgScope?: OrgScope;
   /** Per-worker org proof (verifyWorkerInOrgScope) for hr_partner actions on a worker. */
   workerOrgProof?: WorkerOrgProof;
+  /**
+   * Pay-group tools: the pay group or pay group detail WID the call targets (falls back to
+   * contextInstanceId). Omit only when listing.
+   */
+  payGroupId?: string;
+  /** Pay groups listed earlier in this session (src/rbac/pay-group-scope.ts openPayGroupSession). */
+  payGroupSession?: PayGroupSession;
+  /** Conversation/session id the PayGroupSession must be bound to. */
+  sessionId?: string;
   /** BP step tools: the worker the step is awaiting (from find_business_process_event_step / tasks). */
   awaitingApproverWid?: string;
   /** Caller holds the Workday payroll domain (required for request_payroll_input). */
@@ -363,6 +402,14 @@ function permits(scope: AgentReadyScope, name: string, write: boolean, ctx: Agen
     if (scope === "all") return true;
     if (!basis) return false;
     return isOrgInScope(ctx.orgScope, ctx.contextInstanceId, basis, ctx.callerWid);
+  }
+  if (kind === "pay_group") {
+    if (write) return false;
+    if (scope === "all") return true; // admin: full read, exempt from the listing proof
+    if (scope !== "pay_group") return false;
+    const id = ctx.payGroupId ?? ctx.contextInstanceId;
+    if (id === undefined) return true; // list: Workday returns only pay groups the caller may view
+    return isPayGroupListed(ctx.payGroupSession, id, ctx.callerWid, ctx.sessionId);
   }
   if (kind === "caller_list") {
     if (write) return false;

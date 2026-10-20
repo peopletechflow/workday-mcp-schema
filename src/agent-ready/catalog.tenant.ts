@@ -1,5 +1,5 @@
 /**
- * TENANT-DISCOVERED Agent-Ready tools (worker-data-skill + self-service-skill) (hand-maintained, kept separate from the generated seed
+ * TENANT-DISCOVERED Agent-Ready tools (worker-data, self-service, manager-actions, hr-partner, payroll-viewer skills) (hand-maintained, kept separate from the generated seed
  * so `scripts/sync-agent-ready-catalog.ts` regenerating catalog.generated.ts never drops them).
  *
  * Discovered 2026-10-20 by the Workday Developer Agent on dev tenant bzyvydgxsb_extdev
@@ -710,23 +710,190 @@ export const HR_PARTNER_SKILL_TOOLS: AgentReadyToolDefinition[] = [
     businessProcess: { flow: "government_id_change", step: "submit" }, inputSchemaStatus: "unknown", notes: ID_GAP_NOTE },
 ];
 
+// ---------------------------------------------------------------------------
+// payroll-viewer-skill (Extend app peopletechHrBaseline_rjqhll), discovered 2026-10-20.
+// 26 tools, all reads: 4 already catalogued (tagged below), 22 new. Mirror (verbatim skill
+// text): extend/skills/payroll-viewer-skill.md. The skill is read-only: it never grants
+// request_payroll_input or any other payroll write.
+// ---------------------------------------------------------------------------
+
+export const PAYROLL_VIEWER_SKILL = "payroll-viewer-skill";
+export const PAYROLL_VIEWER_DISCOVERY_SOURCE = `${TENANT_DISCOVERY_SOURCE} payroll-viewer-skill`;
+
+/** Already-catalogued tools the payroll-viewer-skill also uses (tagged with the skill). */
+export const PAYROLL_VIEWER_SHARED_TOOLS = [
+  "find_payslips", // self-service-skill
+  "find_payslip_summary", // self-service-skill
+  "list_request_payroll_input_workers", // manager-actions-skill
+  "list_request_payroll_input_pay_components", // manager-actions-skill
+] as const;
+
+/** Writes the skill text explicitly puts out of scope. Never granted through this skill. */
+export const PAYROLL_VIEWER_DECLINED_WRITES = [
+  "request_payroll_input",
+  "create_payroll_inputs", // named in the skill text, not catalogued
+  "edit_payroll_inputs", // named in the skill text, not catalogued
+] as const;
+
+const tagPayrollViewer = (tools: AgentReadyToolDefinition[]): AgentReadyToolDefinition[] =>
+  tools.map((t) =>
+    (PAYROLL_VIEWER_SHARED_TOOLS as readonly string[]).includes(t.name)
+      ? { ...t, skills: [...(t.skills ?? []), PAYROLL_VIEWER_SKILL] }
+      : t,
+  );
+
+const pvRead = {
+  kind: "basic",
+  operationType: "VIEW",
+  readOnly: true,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: PAYROLL_VIEWER_DISCOVERY_SOURCE,
+  skills: [PAYROLL_VIEWER_SKILL],
+  inputSchemaStatus: "unknown",
+} as const;
+const PAY_GROUPS = "Payroll / Pay Groups";
+const PAY_RESULTS = "Payroll / Pay Results";
+const RETRO = "Payroll / Retro";
+const YEAR_END = "Payroll / Year-End Tax";
+const SELF_NOTE = "Self-service: signed-in worker only (pass \"me\"); any other worker id is refused before the call.";
+const PG_NOTE = "Pay group / pay group detail IDs must come from an earlier find_pay_groups / find_pay_group_details call (src/rbac/pay-group-scope.ts).";
+
+export const PAYROLL_VIEWER_SKILL_TOOLS: AgentReadyToolDefinition[] = [
+  // ---- pay groups (scope: accessible pay groups) ----
+  { ...pvRead, name: "find_pay_groups", productArea: PAY_GROUPS, category: "Pay Groups",
+    description: "Pay groups visible to the caller (Set Up: Payroll - Pay Group Specific); one pay group by contextInstanceId.",
+    inputSchemaStatus: "partial", securityDomains: ["Set Up: Payroll - Pay Group Specific"],
+    params: [
+      p("contextInstanceId", "WID", "Pay group WID (omit to list all visible pay groups)."),
+      p("country", "WID", "Filter by country."),
+    ],
+    notes: "Omit contextInstanceId to list; a supplied ID must have been listed earlier. " + PG_NOTE },
+  { ...pvRead, name: "find_pay_group_details", productArea: PAY_GROUPS, category: "Pay Group Details",
+    description: "Pay group detail: run category, period schedule (periodSchedule), processing periods (processingPeriods), pay run groups.",
+    inputSchemaStatus: "partial", securityDomains: ["Set Up: Payroll - Pay Group Specific"],
+    params: [p("runCategories", "WID[]", "Filter by run category (resolve via payroll_run_categories_prompt).")],
+    notes: "Takes the pay group detail WID (param name not captured). Doubles as the payroll calendar. " + PG_NOTE },
+  { ...pvRead, name: "payroll_run_categories_prompt", productArea: PAY_GROUPS, category: "Run Categories (prompt-like lookup)",
+    description: "Resolves run category WIDs (filter for find_pay_group_details)." },
+  { ...pvRead, name: "payroll_run_payroll_calculation_pay_run_group_selections_prompt", productArea: PAY_GROUPS, category: "Pay Run Groups (prompt-like lookup)",
+    description: "Active pay run group selections eligible for a regular (on-cycle) payroll calculation run." },
+  { ...pvRead, name: "payroll_off_cycle_pay_pay_run_group_selections_prompt", productArea: PAY_GROUPS, category: "Off-Cycle (prompt-like lookup)",
+    description: "Pay run group selections eligible for off-cycle pay." },
+  { ...pvRead, name: "payroll_off_cycle_pay_calculation_periods_prompt", productArea: PAY_GROUPS, category: "Off-Cycle (prompt-like lookup)",
+    description: "Valid off-cycle calculation periods for the selected pay run group.",
+    notes: "Takes the selected pay run group (param name not captured)." },
+  // ---- pay results by group and period ----
+  { ...pvRead, name: "payroll_payroll_results_for_pay_group_detail_and_period_prompt", productArea: PAY_RESULTS, category: "Pay Results (sensitive)",
+    sensitive: true,
+    description: "Payroll results for a pay group detail and period (primary result-browsing tool).",
+    notes: "Takes pay group detail + period (param names not captured). Response is shaped by src/safety/pay-results.ts: " +
+      "summary (count + statuses) unless a payroll_viewer explicitly asks for worker-level lines. " + PG_NOTE },
+  { ...pvRead, name: "payroll_result_calculation_statuses_prompt", productArea: PAY_RESULTS, category: "Calculation Statuses (prompt-like lookup)",
+    description: "Payroll result calculation statuses (off-cycle contexts)." },
+  { ...pvRead, name: "payroll_result_calculation_statuses_all_statuses_prompt", productArea: PAY_RESULTS, category: "Calculation Statuses (prompt-like lookup)",
+    description: "Payroll result calculation statuses (all contexts)." },
+  // ---- payroll input records (read) ----
+  { ...pvRead, name: "find_payroll_inputs", productArea: PAYROLL_INPUT, category: "Payroll Input (sensitive)", sensitive: true,
+    description: "Reads a payroll input instance: worker, pay component, start/end date, input type, value, status.",
+    notes: "Takes the payroll input WID (param name not captured); pass the input's worker as contextInstanceId. Read-only." },
+  { ...pvRead, name: "payroll_input_types_prompt", productArea: PAYROLL_INPUT, category: "Payroll Input (prompt-like lookup)",
+    description: "Valid input types for a selected pay component.",
+    inputSchemaStatus: "partial", params: [p("payComponent", "WID", "Pay component (param name not captured; the skill says 'with the pay component WID').")],
+    notes: "Overlaps list_request_payroll_input_event_input_types_for_pay_component (manager-actions-skill); different tool name, catalogued separately." },
+  // ---- retro (read-only browsing; never launches a retro calculation) ----
+  { ...pvRead, name: "list_retro_results_pay_run_group_selections", productArea: RETRO, category: "Retro Results",
+    description: "Pay run group selections the caller can access for retro worker result review (WID = payRunGroupSelectionId)." },
+  { ...pvRead, name: "list_retro_calc_pay_run_group_selections", productArea: RETRO, category: "Retro Calculation",
+    description: "Pay run groups eligible for a retro calculation (payroll admin context; browse only)." },
+  { ...pvRead, name: "list_retro_event_categories", productArea: RETRO, category: "Retro Calculation",
+    description: "Retro event categories for a pay run group.",
+    inputSchemaStatus: "partial", params: [p("payRunGroupSelectionParm", "WID", "From list_retro_calc_pay_run_group_selections.")] },
+  { ...pvRead, name: "list_retro_calculation_statuses", productArea: RETRO, category: "Retro Calculation",
+    description: "Calculation statuses for a pay run group selection.",
+    inputSchemaStatus: "partial", params: [p("payRunGroupSelectionParm", "WID", "From list_retro_calc_pay_run_group_selections.")] },
+  // ---- self-service (signed-in worker only) ----
+  { ...pvRead, name: "find_worker_next_payroll_payment_date", productArea: PAYROLL, category: "Next Payment Date",
+    description: "The signed-in worker's next on-cycle payroll payment date.", notes: SELF_NOTE },
+  { ...pvRead, name: "list_countries_for_worker_pay_group", productArea: PAYROLL, category: "Worker Pay Group Context",
+    description: "Countries of the signed-in worker's pay group(s).", notes: SELF_NOTE },
+  { ...pvRead, name: "list_companies_for_worker", productArea: PAYROLL, category: "Worker Pay Group Context",
+    description: "Companies in scope for the signed-in worker's pay.", notes: SELF_NOTE },
+  { ...pvRead, name: "list_countries_for_worker_year_end_tax_documents", productArea: YEAR_END, category: "Year-End Tax Documents",
+    description: "Countries with year-end tax documents for the signed-in worker.", notes: SELF_NOTE },
+  { ...pvRead, name: "list_report_types_for_worker_year_end_tax_documents", productArea: YEAR_END, category: "Year-End Tax Documents",
+    description: "Year-end tax form types available to the signed-in worker (e.g. W-2, T4, P60).", notes: SELF_NOTE },
+  { ...pvRead, name: "list_companies_for_worker_year_end_tax_documents", productArea: YEAR_END, category: "Year-End Tax Documents",
+    description: "Companies on the signed-in worker's year-end tax documents.", notes: SELF_NOTE },
+  { ...pvRead, name: "find_tax_form_box_details", productArea: YEAR_END, category: "Tax Form Boxes (sensitive)", sensitive: true,
+    description: "The signed-in worker's tax form box amounts (tax year, form type, company, payroll tax authority, boxes).",
+    inputSchemaStatus: "partial",
+    params: [
+      p("country", "WID", "Filter by country."),
+      p("reportType", "WID", "Filter by form type."),
+      p("startDate", "date", "Filter by start date."),
+      p("company", "WID", "Filter by company."),
+    ],
+    notes: SELF_NOTE },
+];
+
+/** payroll-viewer-skill tools that are self-only for EVERY role (incl. admin): caller's own record. */
+export const PAYROLL_SELF_ONLY_TOOLS = [
+  "find_payslips",
+  "find_payslip_summary",
+  "find_worker_next_payroll_payment_date",
+  "find_tax_form_box_details",
+  "list_countries_for_worker_year_end_tax_documents",
+  "list_report_types_for_worker_year_end_tax_documents",
+  "list_companies_for_worker_year_end_tax_documents",
+  "list_countries_for_worker_pay_group",
+  "list_companies_for_worker",
+] as const;
+
+/** payroll-viewer-skill pay group tools: payroll_viewer (pay-group proof) + admin. */
+export const PAY_GROUP_TOOLS = [
+  "find_pay_groups",
+  "find_pay_group_details",
+  "payroll_run_categories_prompt",
+  "payroll_run_payroll_calculation_pay_run_group_selections_prompt",
+  "payroll_off_cycle_pay_pay_run_group_selections_prompt",
+  "payroll_off_cycle_pay_calculation_periods_prompt",
+  "payroll_payroll_results_for_pay_group_detail_and_period_prompt",
+  "payroll_result_calculation_statuses_prompt",
+  "payroll_result_calculation_statuses_all_statuses_prompt",
+  "list_retro_results_pay_run_group_selections",
+  "list_retro_calc_pay_run_group_selections",
+  "list_retro_event_categories",
+  "list_retro_calculation_statuses",
+] as const;
+
+/** payroll-viewer-skill payroll input reads (payroll_viewer + admin for the new ones). */
+export const PAYROLL_INPUT_VIEW_TOOLS = [
+  "find_payroll_inputs",
+  "list_request_payroll_input_workers",
+  "list_request_payroll_input_pay_components",
+  "payroll_input_types_prompt",
+] as const;
+
 /**
  * Every tenant-discovered tool: worker-data-skill 13 + self-service-skill 34 new +
- * manager-actions-skill 41 new + hr-partner-skill 21 new = 109 (shared tools appear once).
+ * manager-actions-skill 41 new + hr-partner-skill 21 new + payroll-viewer-skill 22 new = 131
+ * (shared tools appear once).
  */
-export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = [
+export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = tagPayrollViewer([
   ...tagShared(WORKER_DATA_SKILL_TOOLS),
   ...tagShared(SELF_SERVICE_SKILL_TOOLS),
   ...MANAGER_ACTIONS_SKILL_TOOLS,
   ...HR_PARTNER_SKILL_TOOLS,
-];
+  ...PAYROLL_VIEWER_SKILL_TOOLS,
+]);
 
 /** Special-category tools (ethnicity, passport/visa/national/government IDs). */
 export const SPECIAL_CATEGORY_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.specialCategory).map((t) => t.name);
 
 /**
  * All tenant tools flagged sensitive: personal info, home address, payslips, dependents, legal name,
- * worker history, expense lines, feedback received, payroll input (request + eligible workers).
+ * worker history, expense lines, feedback received, payroll input (request + eligible workers + input records),
+ * pay results by pay group/period, tax form box amounts.
  */
 export const SENSITIVE_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.sensitive).map((t) => t.name);
 

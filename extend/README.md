@@ -6,7 +6,8 @@ This folder mirrors the **Workday Extend** app that hosts our custom agent skill
 | --- | --- |
 | Extend app | `peopletechHrBaseline_rjqhll` |
 | Dev tenant | `bzyvydgxsb_extdev` (wd119, Workday Open Developer Platform personal dev tenant) |
-| Skills | [`worker-data-skill`](./skills/worker-data-skill.md) (read-only, 13 tools) · [`self-service-skill`](./skills/self-service-skill.md) (self only, 39 tools incl. 15 staged writes; known gap: `update_personal_information_marital_status`) · [`manager-actions-skill`](./skills/manager-actions-skill.md) (52 tools incl. 6 writes; verified team scope) · [`hr-partner-skill`](./skills/hr-partner-skill.md) (49 tools, 21 new incl. 11 writes; org-scope gate; gap: no open-event tool for ID changes) |
+| Skills | [`worker-data-skill`](./skills/worker-data-skill.md) (read-only, 13 tools) · [`self-service-skill`](./skills/self-service-skill.md) (self only, 39 tools incl. 15 staged writes; known gap: `update_personal_information_marital_status`) · [`manager-actions-skill`](./skills/manager-actions-skill.md) (52 tools incl. 6 writes; verified team scope) · [`hr-partner-skill`](./skills/hr-partner-skill.md) (49 tools, 21 new incl. 11 writes; org-scope gate; gap: no open-event tool for ID changes) · [`payroll-viewer-skill`](./skills/payroll-viewer-skill.md) (read-only, 26 tools, 22 new + 4 shared, 0 writes; own pay self-only for every role; pay-group listing proof; pay results summary-only unless a payroll viewer asks for detail) |
+| Catalog totals | 137 tools (104 reads, 33 writes): 131 tenant-discovered + 6 public-docs seed rows. Writes unchanged by `payroll-viewer-skill`. |
 
 ## How skills are built
 
@@ -15,5 +16,7 @@ This folder mirrors the **Workday Extend** app that hosts our custom agent skill
 3. The tools it uses go into the Layer-1 catalog (`src/agent-ready/catalog.tenant.ts`) with `source: "tenant-discovered <date> <tenant>"`, and they are mapped to roles in `src/rbac/agent-ready.ts`. `npm run check:rbac` fails if a tenant tool has no mapping.
 
 WIDs are not exposed in the Developer Agent UI, so mirrored tools carry `wid: null` until an ASOR dump fills them in (`npm run sync:agent-ready -- --asor <dump.json>`). Never invent WIDs.
+
+`skills/payroll-viewer-skill.md` is the verbatim Developer Agent skill text (the other mirrors are condensed). Its tools are in `PAYROLL_VIEWER_SKILL_TOOLS` (`src/agent-ready/catalog.tenant.ts`); RBAC in `src/rbac/agent-ready.ts`, the pay-group proof in `src/rbac/pay-group-scope.ts` and the pay-results shaping rule in `src/safety/pay-results.ts`.
 
 If the tenant and this mirror disagree, the tenant wins. Re-run discovery and update both the mirror and the catalog.
