@@ -36,7 +36,13 @@ import { RbacDeniedError } from "./enforce.js";
 import { isInVerifiedTeam, type TeamScope } from "./team-scope.js";
 import { isOrgInScope, isValidOrgScope, isWorkerInOrgScope, type OrgScope, type WorkerOrgProof } from "./org-scope.js";
 import { isPayGroupListed, isWorkerInPayGroupScope, type PayGroupSession, type WorkerPayGroupProof } from "./pay-group-scope.js";
-import { PAY_GROUP_TOOLS, PAYROLL_SELF_ONLY_TOOLS, PAYSLIP_TOOLS } from "../agent-ready/catalog.tenant.js";
+import {
+  ADMIN_LOOKUP_TOOLS,
+  ADMIN_SKILL_TOOLS,
+  PAY_GROUP_TOOLS,
+  PAYROLL_SELF_ONLY_TOOLS,
+  PAYSLIP_TOOLS,
+} from "../agent-ready/catalog.tenant.js";
 
 export type AgentReadyScope =
   | "self"
@@ -97,6 +103,9 @@ const HR_READ: AgentReadyGrant = { hr_partner: "supervisory_org", admin: "all" }
 /** Org chart reads: manager limited to own team orgs (OrgScope with basis "manager"). */
 const HR_ORG_CHART_READ: AgentReadyGrant = { ...HR_READ, manager: "self_and_reports" };
 const HR_SELF_OR_ORG_WRITE: AgentReadyGrant = { worker_self: "self", hr_partner: "supervisory_org", admin: "self" };
+
+// ---- admin-skill: new reads are admin-only, full tenant-wide read ----
+const ADMIN_READ: AgentReadyGrant = { admin: "all" };
 
 // ---- payroll-viewer-skill (read-only) ----
 /** Pay group tools + new payroll input reads: payroll_viewer (pay-group proof) and admin (full read). */
@@ -227,6 +236,12 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   // _pay_components keep their manager-actions grants above (payroll_viewer "pay_group" already).
   find_payroll_inputs: PV_PAY_GROUP_READ, // sensitive
   payroll_input_types_prompt: PV_PAY_GROUP_READ,
+
+  // admin-skill (92 tools: 71 shared keep their grants above — admin "all" on reads except the 7
+  // self-only own-pay tools, "self" on the 12 self-service writes; 21 new reads: admin only, "all").
+  // Responses pass src/safety/sensitive-fields.ts; multi-worker demographics go through
+  // src/safety/diversity.ts. No compensation / termination / hire / org / security / job-change write.
+  ...Object.fromEntries(ADMIN_SKILL_TOOLS.map((t) => [t.name, ADMIN_READ])),
 };
 
 /** Recipes: roles = intersection of the tools they call, minus worker_self (chains leave self). */
@@ -270,13 +285,18 @@ const NONE_TARGET = [
   "list_request_payroll_input_pay_components", "list_request_payroll_input_event_input_types_for_pay_component",
   "list_leave_event_statuses", "list_time_off_entry_statuses", "find_ethnicity", "find_ethnicity_details",
   "payroll_input_types_prompt",
+  ...ADMIN_LOOKUP_TOOLS,
 ];
-const ORG_TARGET = ["get_org_chart_children", "get_org_chart_parent", "list_organization_members", "aggregate_diversity"];
+const ORG_TARGET = [
+  "get_org_chart_children", "get_org_chart_parent", "list_organization_members", "aggregate_diversity",
+  "find_org_chart_navigable",
+];
 const CALLER_LIST_TARGET = [
   "find_workers_to_initiate_change_job", "find_worker_from_my_team_to_filter_performance_review",
   "list_workers_for_initiate_performance_review", "list_my_teams_learning_records", "list_request_payroll_input_workers",
   "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
   "find_org_chart_organizations",
+  "find_feedback_events_awaiting_me",
 ];
 export const AGENT_READY_TOOL_TARGETS: Readonly<Record<string, AgentReadyTarget>> = {
   ...Object.fromEntries(NONE_TARGET.map((n) => [n, "none" as const])),

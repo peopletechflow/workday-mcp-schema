@@ -11,6 +11,12 @@
  *   - populations smaller than k return nothing but `suppressed: true`
  *   - no worker ids, names or per-person values ever leave this function
  * RBAC: recipe `aggregate_diversity` — hr_partner (OrgScope proof for the org) and admin only.
+ *
+ * admin-skill Rule 3: any read touching MORE THAN ONE worker's demographic data (personal
+ * information, ethnicity, gender, marital status) must go through this filter:
+ * assertSingleWorkerDemographicRead() refuses per-person demographic reads spanning several
+ * workers, and computeDemographicAggregate() returns the same k >= 5 bucket counts for any
+ * demographic dimension.
  */
 import { DIVERSITY_MIN_GROUP_SIZE } from "../agent-ready/recipes.js";
 import { assertAgentReadyCallAllowed, type AgentReadyCallContext } from "../rbac/agent-ready.js";
@@ -85,4 +91,51 @@ export async function computeDiversityAggregate(
   const values: (string | null)[] = [];
   for (const m of members) values.push(await adapter.ethnicityOf(m));
   return aggregateBuckets(ctx.contextInstanceId, values);
+}
+
+/** Tools whose output (or use) carries demographic data. */
+export const DEMOGRAPHIC_TOOLS: ReadonlySet<string> = new Set([
+  "find_worker_personal_information",
+  "find_ethnicity",
+  "find_ethnicity_details",
+  "list_active_genders",
+  "list_active_marital_statuses",
+]);
+export type DemographicDimension = "ethnicity" | "gender" | "marital_status";
+
+export class AggregateOnlyError extends Error {
+  constructor(tool: string, workers: number) {
+    super(
+      `'${tool}' touches demographic data for ${workers} workers: per-person output is not allowed. ` +
+        "Use computeDemographicAggregate (counts per bucket, groups under 5 suppressed).",
+    );
+    this.name = "AggregateOnlyError";
+  }
+}
+
+/** Per-person demographic reads are allowed for at most ONE worker per request. */
+export function assertSingleWorkerDemographicRead(tool: string, workerIds: readonly string[]): void {
+  if (!DEMOGRAPHIC_TOOLS.has(tool)) return;
+  const n = new Set(workerIds.map((w) => w.trim()).filter(Boolean)).size;
+  if (n > 1) throw new AggregateOnlyError(tool, n);
+}
+
+export type DemographicAdapter = {
+  listMemberIds(orgId: string): Promise<string[]>;
+  /** find_worker_personal_information(worker) -> label for the dimension (null = not disclosed). */
+  attributeOf(workerWid: string, dimension: DemographicDimension): Promise<string | null>;
+};
+
+/** Same RBAC and k >= 5 suppression as computeDiversityAggregate, for any dimension. */
+export async function computeDemographicAggregate(
+  roles: readonly Role[],
+  ctx: AgentReadyCallContext & { contextInstanceId: string },
+  dimension: DemographicDimension,
+  adapter: DemographicAdapter,
+): Promise<DiversityAggregate & { dimension: DemographicDimension }> {
+  assertAgentReadyCallAllowed(roles, "aggregate_diversity", ctx);
+  const members = await adapter.listMemberIds(ctx.contextInstanceId);
+  const values: (string | null)[] = [];
+  for (const m of members) values.push(await adapter.attributeOf(m, dimension));
+  return { ...aggregateBuckets(ctx.contextInstanceId, values), dimension };
 }

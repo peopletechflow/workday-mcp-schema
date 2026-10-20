@@ -1,5 +1,5 @@
 /**
- * TENANT-DISCOVERED Agent-Ready tools (worker-data, self-service, manager-actions, hr-partner, payroll-viewer skills) (hand-maintained, kept separate from the generated seed
+ * TENANT-DISCOVERED Agent-Ready tools (worker-data, self-service, manager-actions, hr-partner, payroll-viewer, admin skills) (hand-maintained, kept separate from the generated seed
  * so `scripts/sync-agent-ready-catalog.ts` regenerating catalog.generated.ts never drops them).
  *
  * Discovered 2026-10-20 by the Workday Developer Agent on dev tenant bzyvydgxsb_extdev
@@ -881,18 +881,140 @@ export const PAYROLL_INPUT_VIEW_TOOLS = [
   "payroll_input_types_prompt",
 ] as const;
 
+// ---------------------------------------------------------------------------
+// admin-skill (Extend app peopletechHrBaseline_rjqhll), discovered 2026-10-20.
+// 92 tools from a scrolled screenshot (rows above the first visible one may be missing):
+// 80 reads + 12 writes. 71 already catalogued (all tagged below, incl. the 12 self-service
+// writes), 21 new (all reads). Mirror (verbatim skill text): extend/skills/admin-skill.md
+// Admin: full tenant-wide read; writes self-only through src/safety/native-write-guard.ts.
+// ---------------------------------------------------------------------------
+
+export const ADMIN_SKILL = "admin-skill";
+export const ADMIN_DISCOVERY_SOURCE = `${TENANT_DISCOVERY_SOURCE} admin-skill`;
+
+/** Already-catalogued tools the admin-skill also uses (tagged with the skill). */
+export const ADMIN_SHARED_TOOLS = [
+  // writes (12): self-service staged writes, self-only
+  "create_address_for_home_contact_change", "create_email_address_for_home_contact_change",
+  "create_personal_information_change_event", "create_phone_number_for_home_contact_change",
+  "create_worker_home_contact_change", "create_worker_time_off_request", "submit_home_contact_change",
+  "submit_personal_information_changes", "update_address_on_home_contact_change",
+  "update_email_address_for_home_contact_change", "update_phone_number_for_home_contact_change",
+  "update_worker_time_off_entry",
+  // reads (59)
+  "find_absence_balances", "find_anytime_feedback_events", "find_business_process_event", "find_business_process_event_step",
+  "find_business_process_tasks", "find_completed_steps_for_business_process_event", "find_continue_learning",
+  "find_detailed_personal_information_change_event", "find_ethnicity", "find_ethnicity_details", "find_goal_status",
+  "find_in_progress_create_job_requisition_events", "find_job_requisitions", "find_learning_transcript", "find_my_candidates",
+  "find_org_chart_organizations", "find_org_chart_workers", "find_payslip_details", "find_payslip_summary", "find_payslips",
+  "find_performance_review", "find_plan_assignments", "find_remaining_steps_for_business_process_event",
+  "find_service_dates_for_worker", "find_staffing_agent_supervisory_organization_members",
+  "find_staffing_supervisory_organization", "find_staffing_workers", "find_tax_form_box_details",
+  "find_worker_anytime_feedback_received", "find_worker_eligible_absence_types", "find_worker_legal_name",
+  "find_worker_next_payroll_payment_date", "find_worker_personal_information", "find_worker_time_off_details",
+  "find_worker_valid_time_off_dates", "get_learning_content", "get_org_chart_children", "get_org_chart_parent",
+  "list_job_requisition_statuses", "list_job_requisition_supervisory_organizations", "list_leave_event_statuses",
+  "list_my_candidate_candidate_stages", "list_my_candidate_candidate_types", "list_my_candidate_job_families",
+  "list_my_candidate_job_profiles", "list_my_goals", "list_my_teams_learning_records", "list_onboarding_business_process_tasks",
+  "list_organization_members", "list_organizations", "list_staffing_business_process_types", "list_staffing_jobs",
+  "list_time_off_entry_statuses", "list_worker_addresses", "list_worker_direct_reports", "list_worker_email_addresses",
+  "list_worker_history_events", "list_worker_organizations", "list_worker_phone_numbers",
+] as const;
+
+/**
+ * Hard refusals (admin-skill Rule 4): admin never gets these writes through this skill.
+ * Matched against write tool names; any catalogued write that matches is never granted to
+ * admin beyond "self" and is not tagged with the admin-skill.
+ */
+export const ADMIN_HARD_REFUSALS = [
+  { category: "compensation", pattern: /compensation|grade|salary|bonus|merit|stipend|allowance/ },
+  { category: "termination", pattern: /terminat|rehire|separation|retire/ },
+  { category: "hire", pattern: /hire|pre_hire|prehire|onboard|applicant_to_worker/ },
+  { category: "org change", pattern: /organization|supervisory_org|reorg|cost_center|company/ },
+  { category: "security change", pattern: /security|role|domain|permission|user_account/ },
+  { category: "job change for another worker", pattern: /change_job|job|position|transfer|promot|demot/ },
+] as const;
+
+const adminRead = {
+  kind: "basic",
+  operationType: "VIEW",
+  readOnly: true,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: ADMIN_DISCOVERY_SOURCE,
+  skills: [ADMIN_SKILL],
+  inputSchemaStatus: "unknown",
+} as const;
+const aRead = (name: string, productArea: string, category: string, description: string, extra: Partial<AgentReadyToolDefinition> = {}): AgentReadyToolDefinition => ({
+  ...adminRead, name, productArea, category, description, ...extra,
+});
+
+export const ADMIN_SKILL_TOOLS: AgentReadyToolDefinition[] = [
+  // ---- worker profile / job / history ----
+  aRead("find_worker_preferred_name", PERSONAL, "Preferred Name", "A worker's preferred name."),
+  aRead("list_worker_web_addresses", CONTACT, "Contact", "Web addresses of a worker."),
+  aRead("find_talent_profile_worker_job_history", "Talent / Profile", "Job History", "Past roles from the worker's talent profile."),
+  aRead("find_worker_education_records", "Talent / Profile", "Education", "Education history from the worker's talent profile."),
+  aRead("get_positions", STAFFING, "Positions", "Position metadata."),
+  aRead("get_job_profiles", STAFFING, "Job Profiles", "Job profile metadata."),
+  aRead("find_job_profiles", STAFFING, "Job Profiles", "Job profiles by job family."),
+  // ---- tax documents ----
+  aRead("find_worker_w2s", "Payroll / Year-End Tax", "W-2 (sensitive)", "A worker's W-2 tax documents.", {
+    sensitive: true,
+    notes: "Likely self-service server-side like the other year-end tax tools. May carry a national ID (SSN): responses pass the sensitive field gate (src/safety/sensitive-fields.ts).",
+  }),
+  // ---- org hierarchy / worktags ----
+  aRead("find_org_chart_navigable", ORGS, "Org Chart", "Raw navigable org chart node data."),
+  aRead("get_worktag_values", "Financials / Worktags", "Worktags", "Worktag values (e.g. cost center WIDs)."),
+  aRead("list_worktag_type_configurations", "Financials / Worktags", "Worktags", "Worktag type configurations."),
+  // ---- compensation reference (read only; never stage compensation changes) ----
+  aRead("get_compensation_grades", "Compensation", "Compensation Grades (reference)", "Compensation grade reference data. Read only; compensation changes are refused."),
+  aRead("get_compensation_grade_profiles", "Compensation", "Compensation Grades (reference)", "Compensation grade profile reference data. Read only."),
+  // ---- business process ----
+  aRead("find_in_progress_steps_for_business_process_event", BP, "Business Process Step", "Currently active steps of a business process event."),
+  aRead("find_comments_for_business_process_event", BP, "Business Process Event", "Comments on a business process event."),
+  aRead("find_attachments_for_business_process_event", BP, "Business Process Event (sensitive)", "Attachments on a business process event.", {
+    sensitive: true, notes: "Attachments can hold any document (IDs, contracts); pass through the sensitive field gate.",
+  }),
+  aRead("find_home_contact_change_event", CONTACT, "Home Contact Change", "Reads a home contact change event (staged values before preview).", {
+    notes: "Read step inside home_contact_change.",
+  }),
+  // ---- recruiting / feedback ----
+  aRead("find_internal_job_postings", RECRUITING, "Job Postings", "Employee-visible internal job postings."),
+  aRead("find_feedback_events_awaiting_me", PERF, "Anytime Feedback", "Feedback requests awaiting the signed-in user."),
+  // ---- demographic reference (aggregate-only when about more than one worker) ----
+  aRead("list_active_genders", PERSONAL, "Demographics (reference)", "Active gender reference values.", {
+    notes: "Demographic: any multi-worker use goes through the aggregate-only filter (src/safety/diversity.ts).",
+  }),
+  aRead("list_active_marital_statuses", PERSONAL, "Demographics (reference)", "Active marital status reference values.", {
+    notes: "Demographic: any multi-worker use goes through the aggregate-only filter (src/safety/diversity.ts).",
+  }),
+];
+
+/** admin-skill reference lookups (no worker / org target). */
+export const ADMIN_LOOKUP_TOOLS = [
+  "get_positions", "get_job_profiles", "find_job_profiles", "get_worktag_values", "list_worktag_type_configurations",
+  "get_compensation_grades", "get_compensation_grade_profiles", "find_internal_job_postings",
+  "list_active_genders", "list_active_marital_statuses",
+] as const;
+
+const tagAdmin = (tools: AgentReadyToolDefinition[]): AgentReadyToolDefinition[] =>
+  tools.map((t) =>
+    (ADMIN_SHARED_TOOLS as readonly string[]).includes(t.name) ? { ...t, skills: [...(t.skills ?? []), ADMIN_SKILL] } : t,
+  );
+
 /**
  * Every tenant-discovered tool: worker-data-skill 13 + self-service-skill 34 new +
- * manager-actions-skill 41 new + hr-partner-skill 21 new + payroll-viewer-skill 22 new = 131
- * (shared tools appear once).
+ * manager-actions-skill 41 new + hr-partner-skill 21 new + payroll-viewer-skill 22 new +
+ * admin-skill 21 new = 152 (shared tools appear once).
  */
-export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = tagPayrollViewer([
+export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = tagAdmin(tagPayrollViewer([
   ...tagShared(WORKER_DATA_SKILL_TOOLS),
   ...tagShared(SELF_SERVICE_SKILL_TOOLS),
   ...MANAGER_ACTIONS_SKILL_TOOLS,
   ...HR_PARTNER_SKILL_TOOLS,
   ...PAYROLL_VIEWER_SKILL_TOOLS,
-]);
+  ...ADMIN_SKILL_TOOLS,
+]));
 
 /** Special-category tools (ethnicity, passport/visa/national/government IDs). */
 export const SPECIAL_CATEGORY_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.specialCategory).map((t) => t.name);
@@ -900,7 +1022,7 @@ export const SPECIAL_CATEGORY_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERE
 /**
  * All tenant tools flagged sensitive: personal info, home address, payslips, dependents, legal name,
  * worker history, expense lines, feedback received, payroll input (request + eligible workers + input records),
- * pay results by pay group/period, tax form box amounts.
+ * pay results by pay group/period, tax form box amounts, W-2s, BP event attachments.
  */
 export const SENSITIVE_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.sensitive).map((t) => t.name);
 

@@ -11,7 +11,7 @@ Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See 
 | `manager` | Team roster and team time-off reads. Approve/deny team time-off (preview+commit). |
 | `hr_partner` | Broader org reads (supervisory org, team/roster reads). No payroll write. |
 | `payroll_viewer` | Pay group, pay result and payroll input reads (payroll-viewer-skill); payslips of workers in its own pay group(s); other pay data own only. No writes (enforced at startup). |
-| `admin` | **Full read** access to worker data, plus kill switch / config. Uses the admin's own sign-in, never a shared account. Writes only on the admin's own record (self), and always preview + explicit confirm. No Layer-3 write tools are granted. |
+| `admin` | **Full read** access to worker data (tenant-wide, payslips included; own-pay tax / next-payment tools self-only), plus kill switch / config. Uses the admin's own sign-in, never a shared account. Writes only on the admin's own record (self), and always preview + explicit confirm. No Layer-3 write tools are granted. |
 
 ## Permissions matrix (tool → roles)
 | Tool | Access | worker_self | manager | hr_partner | payroll_viewer | admin |
@@ -114,6 +114,19 @@ Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a wri
 - **self** for the other own-pay tools is enforced for every role, admin included: `contextInstanceId` must be `"me"` or the caller's WID. Any other worker id, and a missing one, is refused before the call; `targetInScope`, team or org proofs never widen it.
 - **pay-group proof**: a `PayGroupSession` from `openPayGroupSession(callerWid, sessionId)` in `src/rbac/pay-group-scope.ts`. Only IDs returned by `find_pay_groups` / `find_pay_group_details` can be recorded on it (`recordListedPayGroups`), it is bound to the caller and the session, has a 15 min TTL, and only that module can mint it. A pay group or pay group detail ID (`payGroupId`, or `contextInstanceId`) is accepted for `payroll_viewer` only if it was listed earlier in the same session. Omitting the ID (a list call) is allowed, because Workday returns only the pay groups the caller may view. A bare `targetInScope: true` is refused. Admin is exempt (full read).
 - **Pay results shaping** (`src/safety/pay-results.ts`): results for a pay group detail and period are returned as a summary (result count + count per status, period dates). Worker-level lines go only to `payroll_viewer` or `admin` when the request sets `explicitDetail: true`. Every other role gets the summary.
+
+### admin-skill (92 tools: 21 new, 71 shared; 80 reads, 12 writes)
+| Group | worker_self | manager | hr_partner | payroll_viewer | admin |
+|---|---|---|---|---|---|
+| 59 shared reads (worker data, org chart, BP, recruiting, learning, feedback, time off, ethnicity, payslips) | unchanged | unchanged | unchanged | unchanged | all |
+| `find_tax_form_box_details`, `find_worker_next_payroll_payment_date` (own pay, unchanged) | self | self | self | self | self |
+| 21 new reads (preferred name, web addresses, talent job history, education, positions, job profiles, W-2s ⚠️, org chart navigable, worktags, compensation grades (reference), BP in-progress steps / comments / attachments ⚠️, home contact change event, internal job postings, feedback awaiting me, active genders, active marital statuses) | — | — | — | — | all |
+| 12 writes (own personal info, contact, time off; self-service staged writes) | self | self | — | — | self |
+
+- **Writes** stay self-only: target must be `"me"` or the admin's own WID, and only via `src/safety/native-write-guard.ts` (preview → explicit confirm → commit). Any other target, or no target, is refused.
+- **Hard refusals** (`ADMIN_HARD_REFUSALS`): compensation, termination/rehire, hire/pre-hire/onboarding, org changes, security changes and any job/position change for another worker. No such write is in the skill; any catalogued write matching them is never granted to admin beyond `self` (e.g. `initiate_change_job` on another worker is refused).
+- **Sensitive field gate** (`src/safety/sensitive-fields.ts`): national ID, bank and passport (and visa) fields are hidden in any response unless the request explicitly names one field category for one named worker and the response is about exactly that worker. The response then carries "⚠️ Note: access to this field is logged by Workday." and an `accessLog` record for the audit log.
+- **Demographics** (`src/safety/diversity.ts`): per-person reads of `find_worker_personal_information`, ethnicity, gender or marital status for more than one worker are refused (`assertSingleWorkerDemographicRead`); use `computeDemographicAggregate` (recipe `aggregate_diversity` RBAC, counts only, groups under 5 suppressed).
 
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |

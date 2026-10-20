@@ -53,6 +53,12 @@ import {
   PAYSLIP_TOOLS,
   PAY_GROUP_TOOLS,
   PAYROLL_INPUT_VIEW_TOOLS,
+  ADMIN_SKILL,
+  ADMIN_SKILL_TOOLS,
+  ADMIN_SHARED_TOOLS,
+  ADMIN_DISCOVERY_SOURCE,
+  ADMIN_HARD_REFUSALS,
+  ADMIN_LOOKUP_TOOLS,
 } from "../src/agent-ready/index.js";
 import {
   commitNativeWrite,
@@ -62,7 +68,16 @@ import {
 } from "../src/safety/native-write-guard.js";
 import { PreviewStore } from "../src/safety/preview-store.js";
 import { IdempotencyStore } from "../src/safety/idempotency.js";
-import { aggregateBuckets, computeDiversityAggregate } from "../src/safety/diversity.js";
+import {
+  aggregateBuckets,
+  computeDiversityAggregate,
+  computeDemographicAggregate,
+  assertSingleWorkerDemographicRead,
+  AggregateOnlyError,
+  DEMOGRAPHIC_TOOLS,
+} from "../src/safety/diversity.js";
+import { gateSensitiveFields, HIDDEN, LOGGED_ACCESS_NOTICE } from "../src/safety/sensitive-fields.js";
+import { existsSync, readFileSync } from "node:fs";
 import { getPayResults, shapePayResults, type PayResultLine } from "../src/safety/pay-results.js";
 
 let failed = 0;
@@ -148,7 +163,7 @@ const HR_W = (target: string, extra: AgentReadyCallContext = {}): AgentReadyCall
 });
 const HR_EXCLUDED = ["find_latest_employee_enrollment_event", "get_employee_enrollment_history", "view_benefits_dependent"];
 
-check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-partner + 22 payroll-viewer tools, seeds kept, deduped", () => {
+check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-partner + 22 payroll-viewer + 21 admin tools, seeds kept, deduped", () => {
   if (HR_PARTNER_SKILL_TOOLS.length !== 21 || HR_READS.length !== 10 || HR_WRITES.length !== 11) {
     throw new Error(`hr-partner ${HR_PARTNER_SKILL_TOOLS.length} r${HR_READS.length} w${HR_WRITES.length}`);
   }
@@ -163,10 +178,10 @@ check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-pa
   if (SS_READS.length !== 19 || SS_WRITES.length !== 15) throw new Error(`reads ${SS_READS.length} writes ${SS_WRITES.length}`);
   const names = AGENT_READY_CATALOG.tools.map((t) => t.name);
   if (new Set(names).size !== names.length) throw new Error("duplicate catalog names");
-  if (names.length !== 137 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
+  if (names.length !== 158 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
   // reads = Basic + Prompt, writes = Advanced (some seed rows leave readOnly unset)
   const writes = AGENT_READY_CATALOG.tools.filter((t) => t.kind === "advanced").length;
-  if (names.length - writes !== 104 || writes !== 33) throw new Error(`reads ${names.length - writes} writes ${writes}`);
+  if (names.length - writes !== 125 || writes !== 33) throw new Error(`reads ${names.length - writes} writes ${writes}`);
   for (const t of TENANT_DISCOVERED_TOOLS) if (!names.includes(t.name)) throw new Error(`missing ${t.name}`);
   if (!names.includes("getTimeOffEntries")) throw new Error("public seed dropped");
   const shared = WORKER_DATA_SKILL_TOOLS.filter((t) => t.skills?.includes("self-service-skill")).map((t) => t.name);
@@ -212,6 +227,7 @@ check("sensitive flags: personal info, addresses, payslips, dependents, legal na
     "list_request_payroll_input_workers",
     "list_worker_history_events", ...SPECIAL,
     "find_payroll_inputs", "payroll_payroll_results_for_pay_group_detail_and_period_prompt", "find_tax_form_box_details",
+    "find_worker_w2s", "find_attachments_for_business_process_event",
   ];
   if ([...SENSITIVE_TENANT_TOOLS].sort().join() !== want.sort().join()) throw new Error(`got ${SENSITIVE_TENANT_TOOLS}`);
   for (const n of SENSITIVE_TENANT_TOOLS.filter((x) => ![...MA_READS, ...MA_WRITES, ...HR_READS, ...HR_WRITES].includes(x))) {
@@ -661,6 +677,113 @@ check("pay results shaping: summary (count + statuses) unless payroll_viewer or 
   }
   if (shapePayResults(["payroll_viewer"], { explicitDetail: "yes" as unknown as boolean }, input).mode !== "summary") throw new Error("truthy != explicit");
 });
+
+// ---- admin-skill ----
+// Cross-check against the Developer Agent handoff list when it is present (not part of the repo).
+const ADMIN_HANDOFF = "/workspace/handoff/admin-tools.txt";
+const ADMIN_LIST = existsSync(ADMIN_HANDOFF)
+  ? readFileSync(ADMIN_HANDOFF, "utf8").split(/\s+/).filter(Boolean)
+  : [...ADMIN_SHARED_TOOLS, ...ADMIN_SKILL_TOOLS.map((t) => t.name)];
+const ADMIN_NEW = ADMIN_SKILL_TOOLS.map((t) => t.name);
+const ADMIN_TAGGED = TENANT_DISCOVERED_TOOLS.filter((t) => t.skills?.includes(ADMIN_SKILL));
+const ADMIN_READS = ADMIN_TAGGED.filter((t) => t.readOnly !== false).map((t) => t.name);
+const ADMIN_WRITES = ADMIN_TAGGED.filter((t) => t.readOnly === false).map((t) => t.name);
+check("admin-skill catalog: 92 tools (21 new reads + 71 deduped), 80 reads / 12 writes, all tagged, wid null", () => {
+  if (ADMIN_LIST.length !== 92 || new Set(ADMIN_LIST).size !== 92) throw new Error(`list ${ADMIN_LIST.length}`);
+  if (ADMIN_NEW.length !== 21 || ADMIN_SHARED_TOOLS.length !== 71) throw new Error(`new ${ADMIN_NEW.length} shared ${ADMIN_SHARED_TOOLS.length}`);
+  const tagged = ADMIN_TAGGED.map((t) => t.name).sort();
+  if (tagged.join() !== [...ADMIN_LIST].sort().join()) throw new Error("tagged != handoff list");
+  if (ADMIN_READS.length !== 80 || ADMIN_WRITES.length !== 12) throw new Error(`r${ADMIN_READS.length} w${ADMIN_WRITES.length}`);
+  for (const t of ADMIN_SKILL_TOOLS) {
+    if (t.source !== ADMIN_DISCOVERY_SOURCE || t.wid !== null || t.readOnly !== true || t.kind !== "basic") throw new Error(`${t.name} bad row`);
+  }
+  for (const n of ADMIN_SHARED_TOOLS) if (ADMIN_NEW.includes(n)) throw new Error(`${n} duplicated`);
+  for (const n of ADMIN_LOOKUP_TOOLS) if (targetKindFor(n) !== "none") throw new Error(`${n} not a lookup`);
+});
+const ADMIN_SELF_ONLY_READS = new Set<string>(PV_SELF); // own-pay tools stay self-only (user decision)
+check("admin-skill: admin full tenant-wide read on every read (payslips all), except the self-only own-pay tools", () => {
+  for (const n of ADMIN_READS) {
+    if (ADMIN_SELF_ONLY_READS.has(n)) {
+      if (AGENT_READY_TOOL_PERMISSIONS[n]?.admin !== "self") throw new Error(`${n} admin not self`);
+      denied(["admin"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID });
+      continue;
+    }
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.admin !== "all") throw new Error(`${n} admin not all`);
+    if (allowed(["admin"], n, { contextInstanceId: OTHER_WID }) !== "all") throw new Error(`${n} admin not all`);
+  }
+  for (const n of PAYSLIPS) if (allowed(["admin"], n, { contextInstanceId: OTHER_WID }) !== "all") throw new Error(`${n} admin payslips`);
+  for (const n of ADMIN_NEW) {
+    const roles = Object.keys(AGENT_READY_TOOL_PERMISSIONS[n] ?? {}).join();
+    if (roles !== "admin") throw new Error(`${n} granted to ${roles}`);
+    for (const r of ["worker_self", "manager", "hr_partner", "payroll_viewer"] as Role[]) {
+      denied([r], n, { ...OTHER_IN_SCOPE, contextInstanceId: "me" });
+    }
+  }
+});
+check("admin-skill writes: self only ('me' / own WID), only via preview + confirm; any other target refused", () => {
+  for (const n of ADMIN_WRITES) {
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.admin !== "self") throw new Error(`${n} admin not self`);
+    allowed(["admin"], n, ME_CONFIRMED);
+    denied(["admin"], n, { contextInstanceId: "me" }); // no preview + confirm
+    denied(["admin"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID, previewConfirmed: true });
+    denied(["admin"], n, { contextInstanceId: OTHER_WID, previewConfirmed: true, targetInScope: true, teamScope: TEAM, orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN });
+    denied(["admin"], n, { previewConfirmed: true }); // no target at all
+  }
+  const flowTools = new Set(Object.values(NATIVE_WRITE_FLOWS).flatMap((d) => [d.open, ...d.stage, d.submit].filter(Boolean) as string[]));
+  for (const n of ADMIN_WRITES) if (!flowTools.has(n)) throw new Error(`${n} not in a guarded flow`);
+  if (!NATIVE_WRITE_FLOWS.home_contact_change.reads?.includes("find_home_contact_change_event")) throw new Error("home contact read step");
+});
+check("admin-skill hard refusals: no compensation / termination / hire / org / security / job-change write for another worker", () => {
+  for (const n of ADMIN_WRITES) {
+    const hit = ADMIN_HARD_REFUSALS.find((r) => r.pattern.test(n));
+    if (hit) throw new Error(`${n} is a ${hit.category} write in the admin-skill`);
+  }
+  if (!ADMIN_HARD_REFUSALS.find((r) => r.pattern.test("initiate_change_job"))) throw new Error("change_job not matched");
+  for (const t of AGENT_READY_CATALOG.tools.filter((x) => x.kind === "advanced")) {
+    const hit = ADMIN_HARD_REFUSALS.find((r) => r.pattern.test(t.name));
+    if (!hit) continue;
+    if (t.skills?.includes(ADMIN_SKILL)) throw new Error(`${t.name} (${hit.category}) tagged admin-skill`);
+    const g = AGENT_READY_TOOL_PERMISSIONS[t.name]?.admin;
+    if (g && g !== "self") throw new Error(`${t.name} (${hit.category}) admin ${g}`);
+    denied(["admin"], t.name, { contextInstanceId: OTHER_WID, callerWid: SELF_WID, previewConfirmed: true, payrollDomain: true, awaitingApproverWid: OTHER_WID });
+  }
+  denied(["admin"], "initiate_change_job", { contextInstanceId: OTHER_WID, previewConfirmed: true }); // job change for another worker
+  for (const n of ["get_compensation_grades", "get_compensation_grade_profiles", "get_positions", "get_job_profiles"]) {
+    if (isAgentReadyWrite(n)) throw new Error(`${n} is a write`);
+  }
+});
+const SENSITIVE_DOC = {
+  worker: "w_one", legalName: "A. Person",
+  nationalIds: [{ nationalIdType: "BSN", nationalId: "123456782" }],
+  bankAccounts: [{ iban: "NL91ABNA0417164300", bankName: "ABN" }],
+  passportNumber: "X1234567", visaId: "V9", email: "a@example.com",
+};
+check("sensitive field gate: national ID / bank / passport hidden unless one explicit field for one named worker; logged notice", () => {
+  const j = (x: unknown) => JSON.stringify(x);
+  const def = gateSensitiveFields(SENSITIVE_DOC, ["w_one"]);
+  if (/123456782|NL91|X1234567|V9/.test(j(def.data)) || def.notice || def.accessLog) throw new Error(j(def));
+  if (def.hiddenCategories.join() !== "bank_account,national_id,passport") throw new Error(def.hiddenCategories.join());
+  if (!j(def.data).includes("a@example.com") || !j(def.data).includes(HIDDEN)) throw new Error("non-sensitive data lost");
+  const one = gateSensitiveFields(SENSITIVE_DOC, ["w_one"], { explicitField: "national_id", namedWorkerId: "w_one" });
+  if (!j(one.data).includes("123456782") || /NL91|X1234567/.test(j(one.data))) throw new Error(j(one.data));
+  if (one.notice !== LOGGED_ACCESS_NOTICE || one.accessLog?.workerId !== "w_one" || one.accessLog.category !== "national_id") throw new Error("notice/log");
+  const many = gateSensitiveFields([SENSITIVE_DOC, { ...SENSITIVE_DOC, worker: "w_two" }], ["w_one", "w_two"], { explicitField: "national_id", namedWorkerId: "w_one" });
+  if (/123456782/.test(j(many.data)) || many.notice) throw new Error("shown for several workers");
+  const wrong = gateSensitiveFields(SENSITIVE_DOC, ["w_one"], { explicitField: "passport", namedWorkerId: "w_other" });
+  if (/X1234567/.test(j(wrong.data))) throw new Error("shown for a different worker");
+  const unnamed = gateSensitiveFields(SENSITIVE_DOC, ["w_one"], { explicitField: "bank_account" });
+  if (/NL91/.test(j(unnamed.data))) throw new Error("shown without a named worker");
+});
+check("demographics: per-person reads only for one worker; multi-worker goes through the k>=5 aggregate", () => {
+  for (const n of ["find_worker_personal_information", "find_ethnicity", "find_ethnicity_details", "list_active_genders", "list_active_marital_statuses"]) {
+    if (!DEMOGRAPHIC_TOOLS.has(n)) throw new Error(`${n} not demographic`);
+    assertSingleWorkerDemographicRead(n, ["w1"]);
+    assertSingleWorkerDemographicRead(n, ["w1", "w1"]);
+    try { assertSingleWorkerDemographicRead(n, ["w1", "w2"]); throw new Error(`${n} multi-worker allowed`); }
+    catch (e) { if (!(e instanceof AggregateOnlyError)) throw e; }
+  }
+  assertSingleWorkerDemographicRead("find_staffing_workers", ["w1", "w2"]); // not demographic
+});
 check("unmapped Agent-Ready tool fails closed", () => denied([...ROLES], "__unmapped_native__", { contextInstanceId: "me" }));
 check("admin role description grants full read (old config-only rule removed)", () => {
   if (!/full read/i.test(ROLE_DESCRIPTIONS.admin) || /config introspection only/i.test(ROLE_DESCRIPTIONS.admin)) throw new Error(ROLE_DESCRIPTIONS.admin);
@@ -921,6 +1044,28 @@ await (async () => {
     await expectThrow(() => computeDiversityAggregate(["manager"], { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE }, adapter), "manager");
   });
 
+
+  await run("demographics: admin aggregate per dimension suppresses groups under 5, no per-person output", async () => {
+    const members = Array.from({ length: 13 }, (_, i) => `p${i}`);
+    const gender = (w: string) => (Number(w.slice(1)) < 8 ? "G1" : Number(w.slice(1)) < 11 ? "G2" : "G3");
+    const adapter = { listMemberIds: async () => members, attributeOf: async (w: string) => gender(w) };
+    const r = await computeDemographicAggregate(["admin"], { contextInstanceId: "anyOrg" }, "gender", adapter);
+    if (r.dimension !== "gender" || r.buckets.map((b) => `${b.bucket}:${b.count}`).join() !== "G1:8") throw new Error(JSON.stringify(r));
+    if (/G2|G3|"p\d+"/.test(JSON.stringify(r))) throw new Error("small group or person leaked");
+    if (r.population !== 13 || r.suppressedTotal !== 5) throw new Error(JSON.stringify(r)); // 3 + 2 suppressed, total >= 5 so shown
+    await expectThrow(() => computeDemographicAggregate(["manager"], { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE }, "gender", adapter), "manager");
+  });
+  await run("guard: admin own contact change previews + commits; another worker refused", async () => {
+    const store = new PreviewStore(), idem = new IdempotencyStore(), calls: string[] = [];
+    const admin = { userId: "a1", roles: ["admin"] as Role[], callerWid: SELF_WID };
+    const pv = await previewNativeWrite(store, admin, contactPlan());
+    const r = await commitNativeWrite({ previewStore: store, idempotency: idem }, admin, { previewToken: pv.previewToken, userConfirmed: true, idempotencyKey: "adm" }, mkAdapter(calls));
+    if (!r.submitted) throw new Error(JSON.stringify(r));
+    await expectThrow(() => previewNativeWrite(store, admin, contactPlan(OTHER_WID)), "admin write on other worker");
+    await expectThrow(() => previewNativeWrite(store, admin, { flow: "change_job", summary: "x", contextInstanceId: OTHER_WID,
+      details: { worker: { id: OTHER_WID, descriptor: "Other" }, action: "Change job", effectiveDate: "2026-11-01", effectiveDateProvidedBy: "user", changedFields: [{ field: "job", to: "y" }] },
+      stage: [], submit: { tool: "initiate_change_job", args: {} } }), "admin job change for another worker");
+  });
   // ---- payroll-viewer-skill pay results ----
   await run("pay results: getPayResults checks the pay-group proof before fetching, then shapes", async () => {
     const fetched: string[] = [];

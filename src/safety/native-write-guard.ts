@@ -88,6 +88,7 @@ export const NATIVE_WRITE_FLOWS: Readonly<Record<NativeBpFlow, NativeBpFlowDef>>
   },
   home_contact_change: {
     open: "create_worker_home_contact_change",
+    reads: ["find_home_contact_change_event"],
     stage: [
       "create_email_address_for_home_contact_change",
       "update_email_address_for_home_contact_change",
