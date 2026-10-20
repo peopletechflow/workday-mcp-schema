@@ -26,6 +26,7 @@ import { getByName } from "../agent-ready/registry.js";
 import type { Role } from "./roles.js";
 import { RbacDeniedError } from "./enforce.js";
 import { isInVerifiedTeam, type TeamScope } from "./team-scope.js";
+import { isOrgInScope, isValidOrgScope, isWorkerInOrgScope, type OrgScope, type WorkerOrgProof } from "./org-scope.js";
 
 export type AgentReadyScope =
   | "self"
@@ -70,6 +71,12 @@ const MA_BP_STEP_WRITE: AgentReadyGrant = {
 };
 /** Team/org writes: admin self only (prior decision). */
 const MA_TEAM_WRITE: AgentReadyGrant = { manager: "self_and_reports", hr_partner: "supervisory_org", admin: "self" };
+
+// ---- hr-partner-skill ----
+const HR_READ: AgentReadyGrant = { hr_partner: "supervisory_org", admin: "all" };
+/** Org chart reads: manager limited to own team orgs (OrgScope with basis "manager"). */
+const HR_ORG_CHART_READ: AgentReadyGrant = { ...HR_READ, manager: "self_and_reports" };
+const HR_SELF_OR_ORG_WRITE: AgentReadyGrant = { worker_self: "self", hr_partner: "supervisory_org", admin: "self" };
 
 /** Tool name -> role -> scope. Unlisted tool or role = denied (fail closed). */
 export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGrant>> = {
@@ -166,10 +173,33 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   initiate_performance_review_for_employee: MA_TEAM_WRITE,
   create_anytime_feedback_events: { ...MA_TEAM_WRITE, worker_self: "actor_self", admin: "actor_self" },
   request_payroll_input: MA_TEAM_WRITE, // + payrollDomain required; payroll_viewer never writes
+
+  // hr-partner-skill reads (10): hr_partner via org-scope proof; admin all
+  find_org_chart_organizations: HR_ORG_CHART_READ, // manager: own team orgs only (filterToOrgScope)
+  get_org_chart_children: HR_ORG_CHART_READ,
+  get_org_chart_parent: HR_ORG_CHART_READ,
+  list_organization_members: HR_READ,
+  list_leave_event_statuses: HR_READ,
+  list_time_off_entry_statuses: HR_READ,
+  list_onboarding_business_process_tasks: HR_READ,
+  list_worker_history_events: HR_READ, // sensitive
+  find_ethnicity: HR_READ, // special category
+  find_ethnicity_details: HR_READ, // special category
+  // hr-partner-skill writes (11): worker_self on self, hr_partner in org scope, admin self. Never manager.
+  request_worker_leave_of_absence: HR_SELF_OR_ORG_WRITE,
+  ...Object.fromEntries(
+    [
+      "create_passport_ids", "update_passport_ids", "create_visa_ids", "update_visa_ids", "submit_passport_and_visa_changes",
+      "create_national_ids", "update_national_ids", "create_government_ids", "update_government_ids",
+      "submit_government_identifier_changes",
+    ].map((n) => [n, HR_SELF_OR_ORG_WRITE]),
+  ),
 };
 
 /** Recipes: roles = intersection of the tools they call, minus worker_self (chains leave self). */
 export const AGENT_READY_RECIPE_PERMISSIONS: Readonly<Record<string, AgentReadyGrant>> = {
+  // Aggregate-only diversity (src/safety/diversity.ts): hr_partner (org proof) and admin only.
+  aggregate_diversity: { hr_partner: "supervisory_org", admin: "all" },
   resolve_manager_chain: { manager: "self_and_reports", hr_partner: "supervisory_org", admin: "all" },
   list_indirect_reports: { manager: "self_and_reports", hr_partner: "supervisory_org", admin: "all" },
 };
@@ -189,8 +219,9 @@ const SCOPE_RANK: Record<AgentReadyScope, number> = {
  *   none        reference lookup (types, templates, statuses, pay components): role grant suffices
  *   caller_list list Workday scopes to the caller (my team / my candidates / eligible workers);
  *               org / pay-group scopes still need targetInScope for the requested filter
+ *   org         contextInstanceId = target organization WID (needs an OrgScope containing it)
  */
-export type AgentReadyTarget = "worker" | "none" | "caller_list";
+export type AgentReadyTarget = "worker" | "none" | "caller_list" | "org";
 
 const NONE_TARGET = [
   "list_organizations", "get_learning_content", "find_goal_status",
@@ -201,16 +232,35 @@ const NONE_TARGET = [
   "list_my_candidate_candidate_stages", "list_my_candidate_job_profiles", "list_my_candidate_candidate_types",
   "list_my_candidate_job_families", "find_worker_performance_review_template",
   "list_request_payroll_input_pay_components", "list_request_payroll_input_event_input_types_for_pay_component",
+  "list_leave_event_statuses", "list_time_off_entry_statuses", "find_ethnicity", "find_ethnicity_details",
 ];
+const ORG_TARGET = ["get_org_chart_children", "get_org_chart_parent", "list_organization_members", "aggregate_diversity"];
 const CALLER_LIST_TARGET = [
   "find_workers_to_initiate_change_job", "find_worker_from_my_team_to_filter_performance_review",
   "list_workers_for_initiate_performance_review", "list_my_teams_learning_records", "list_request_payroll_input_workers",
   "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
+  "find_org_chart_organizations",
 ];
 export const AGENT_READY_TOOL_TARGETS: Readonly<Record<string, AgentReadyTarget>> = {
   ...Object.fromEntries(NONE_TARGET.map((n) => [n, "none" as const])),
   ...Object.fromEntries(CALLER_LIST_TARGET.map((n) => [n, "caller_list" as const])),
+  ...Object.fromEntries(ORG_TARGET.map((n) => [n, "org" as const])),
 };
+
+/**
+ * hr-partner-skill tools (and aggregate_diversity): org / team-org scope must be PROVEN with
+ * src/rbac/org-scope.ts (OrgScope / WorkerOrgProof). A bare `targetInScope: true` is refused.
+ */
+export const ORG_PROOF_REQUIRED: ReadonlySet<string> = new Set([
+  "find_org_chart_organizations", "get_org_chart_children", "get_org_chart_parent", "list_organization_members",
+  "list_leave_event_statuses", "list_time_off_entry_statuses", "list_onboarding_business_process_tasks",
+  "list_worker_history_events", "find_ethnicity", "find_ethnicity_details",
+  "request_worker_leave_of_absence",
+  "create_passport_ids", "update_passport_ids", "create_visa_ids", "update_visa_ids", "submit_passport_and_visa_changes",
+  "create_national_ids", "update_national_ids", "create_government_ids", "update_government_ids",
+  "submit_government_identifier_changes",
+  "aggregate_diversity",
+]);
 
 /** BP tools where "awaiting approver = caller" counts as an own item. */
 export const BP_STEP_TOOLS: ReadonlySet<string> = new Set([
@@ -263,6 +313,10 @@ export type AgentReadyCallContext = {
   targetInScope?: boolean;
   /** Verified team (src/rbac/team-scope.ts verifyTeamScope) for manager self_and_reports access. */
   teamScope?: TeamScope;
+  /** Verified org scope (src/rbac/org-scope.ts verifyOrgScope): hr_partner orgs, or a manager's team orgs. */
+  orgScope?: OrgScope;
+  /** Per-worker org proof (verifyWorkerInOrgScope) for hr_partner actions on a worker. */
+  workerOrgProof?: WorkerOrgProof;
   /** BP step tools: the worker the step is awaiting (from find_business_process_event_step / tasks). */
   awaitingApproverWid?: string;
   /** Caller holds the Workday payroll domain (required for request_payroll_input). */
@@ -296,9 +350,27 @@ export function isSelfTarget(ctx: AgentReadyCallContext): boolean {
 function permits(scope: AgentReadyScope, name: string, write: boolean, ctx: AgentReadyCallContext): boolean {
   if (write && scope === "all") return false; // admin full READ only
   const kind = targetKindFor(name);
-  if (kind === "none") return !write;
+  const proof = ORG_PROOF_REQUIRED.has(name);
+  const basis = scope === "supervisory_org" ? "hr_partner" : scope === "self_and_reports" ? "manager" : undefined;
+  if (kind === "none") {
+    if (write) return false;
+    // Org-gated lookups still need a verified org scope for hr_partner.
+    if (proof && scope === "supervisory_org") return isValidOrgScope(ctx.orgScope, "hr_partner", ctx.callerWid);
+    return true;
+  }
+  if (kind === "org") {
+    if (write) return false;
+    if (scope === "all") return true;
+    if (!basis) return false;
+    return isOrgInScope(ctx.orgScope, ctx.contextInstanceId, basis, ctx.callerWid);
+  }
   if (kind === "caller_list") {
     if (write) return false;
+    if (proof) {
+      if (scope === "all") return true;
+      // Caller must hold a verified org scope and filter results with filterToOrgScope().
+      return !!basis && isValidOrgScope(ctx.orgScope, basis, ctx.callerWid);
+    }
     if (scope === "supervisory_org" || scope === "pay_group") return ctx.targetInScope === true;
     return scope !== "actor_self";
   }
@@ -313,7 +385,11 @@ function permits(scope: AgentReadyScope, name: string, write: boolean, ctx: Agen
       return self;
     case "self_and_reports":
       return self || (!!ctx.callerWid && isInVerifiedTeam(ctx.teamScope, ctx.contextInstanceId, ctx.callerWid));
-    case "supervisory_org":
+    case "supervisory_org": {
+      if (self) return true;
+      const proven = isWorkerInOrgScope(ctx.workerOrgProof, ctx.contextInstanceId, "hr_partner", ctx.callerWid);
+      return proof ? proven : proven || ctx.targetInScope === true;
+    }
     case "pay_group":
       return self || ctx.targetInScope === true;
   }

@@ -87,6 +87,18 @@ Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a wri
 - **team** means the target is in a `TeamScope` from `verifyTeamScope()`: direct + indirect reports, recursing where `hasManagerRole` is true, depth ≤ 5, TTL 5 min, tied to the caller's WID, and minted only by that module. `targetInScope: true` alone is **not** accepted for managers. The shared time-off reads (`find_absence_balances`, `find_worker_time_off_details`) now also allow a manager on their team.
 - Approve/deny always requires `awaitingApproverWid` = the caller, supplied by the calling code like payslip ownership. Reference lookups (types, templates, statuses, pay components) need no target. "My team" lists are scoped by Workday; org and pay-group scopes still need `targetInScope` for the requested filter.
 
+### hr-partner-skill (21 new native tools)
+| Group | worker_self | manager | hr_partner | payroll_viewer | admin |
+|---|---|---|---|---|---|
+| Org chart (`find_org_chart_organizations`, `get_org_chart_children`, `get_org_chart_parent`) | — | own team orgs (manager OrgScope) | org proof | — | all |
+| `list_organization_members`, status lookups, onboarding tasks, `list_worker_history_events` ⚠️ | — | — | org proof | — | all |
+| `find_ethnicity`, `find_ethnicity_details` 🛑 | — | — | org proof | — | all |
+| `request_worker_leave_of_absence` | self | — | org proof | — | self |
+| Passport / visa / national / government ID create, update, submit (10) 🛑 | self | — | org proof | — | self |
+| recipe `aggregate_diversity` (counts only, k ≥ 5) | — | — | org proof | — | all |
+
+🛑 = special category (`specialCategory: true`). **org proof** = an `OrgScope` (root supervisory orgs + descendants, depth ≤ 5) for org targets, or a `WorkerOrgProof` (the worker's orgs intersect that scope) for worker targets. Both are minted only by `src/rbac/org-scope.ts`, bound to the caller's WID and to a basis (hr_partner / manager), with a TTL of 5 min. A bare `targetInScope: true` is refused for these tools. Older hr_partner grants still accept `targetInScope` (or a proof). Managers get no ID, passport, visa or ethnicity tools.
+
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |
 |---|---|---|

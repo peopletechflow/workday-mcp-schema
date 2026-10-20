@@ -35,7 +35,11 @@ export type NativeBpFlow =
   | "change_job"
   | "performance_review"
   | "anytime_feedback"
-  | "payroll_input";
+  | "payroll_input"
+  // hr-partner-skill
+  | "leave_of_absence"
+  | "passport_visa_change"
+  | "government_id_change";
 
 /** Flows from manager-actions-skill: preview details are mandatory. */
 export const MANAGER_ACTION_FLOWS: readonly NativeBpFlow[] = [
@@ -47,6 +51,13 @@ export const MANAGER_ACTION_FLOWS: readonly NativeBpFlow[] = [
   "payroll_input",
 ];
 export const DENY_COMMENT_MAX = 256;
+/** Flows whose preview must carry WritePreviewDetails (worker, action, changed fields). */
+export const DETAILS_REQUIRED_FLOWS: readonly NativeBpFlow[] = [
+  ...MANAGER_ACTION_FLOWS,
+  "leave_of_absence",
+  "passport_visa_change",
+  "government_id_change",
+];
 
 export type NativeBpFlowDef = {
   /** Opens the event and returns its WID (absent for single-step flows). */
@@ -58,6 +69,11 @@ export type NativeBpFlowDef = {
   submit: string;
   /** Tools the skill references but the tenant skill does not expose yet. */
   knownGaps?: readonly string[];
+  /**
+   * No open-event tool exists in the tenant (gap): the change event must already exist and its
+   * WID be supplied in plan.eventWid; stage steps run against it, then submit.
+   */
+  externalEvent?: boolean;
 };
 
 export const NATIVE_WRITE_FLOWS: Readonly<Record<NativeBpFlow, NativeBpFlowDef>> = {
@@ -91,6 +107,18 @@ export const NATIVE_WRITE_FLOWS: Readonly<Record<NativeBpFlow, NativeBpFlowDef>>
   anytime_feedback: { stage: [], submit: "create_anytime_feedback_events" },
   // Highest-risk write: manager/hr_partner + payroll domain; payroll_viewer never.
   payroll_input: { stage: [], submit: "request_payroll_input" },
+  leave_of_absence: { stage: [], submit: "request_worker_leave_of_absence" },
+  // GAP: no tool to open a passport/visa or government-identifier change event.
+  passport_visa_change: {
+    externalEvent: true,
+    stage: ["create_passport_ids", "update_passport_ids", "create_visa_ids", "update_visa_ids"],
+    submit: "submit_passport_and_visa_changes",
+  },
+  government_id_change: {
+    externalEvent: true,
+    stage: ["create_national_ids", "update_national_ids", "create_government_ids", "update_government_ids"],
+    submit: "submit_government_identifier_changes",
+  },
 };
 
 export const NATIVE_WRITE_PREVIEW_KIND = "native_bp_write";
@@ -137,7 +165,7 @@ export type NativeWriteCaller = {
   roles: readonly Role[];
   callerWid?: string;
   /** Runtime scope proofs supplied by caller code (re-supplied at commit; team scopes expire). */
-  scope?: Pick<AgentReadyCallContext, "teamScope" | "targetInScope" | "payrollDomain">;
+  scope?: Pick<AgentReadyCallContext, "teamScope" | "targetInScope" | "payrollDomain" | "orgScope" | "workerOrgProof">;
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -158,7 +186,7 @@ function requireUserEffectiveDate(plan: StagedWritePlan): string {
 /** Flow-specific input rules (args are passthrough except fields named in the discovery notes). */
 function validateFlowInputs(plan: StagedWritePlan): void {
   const args = plan.submit.args;
-  if (MANAGER_ACTION_FLOWS.includes(plan.flow)) {
+  if (DETAILS_REQUIRED_FLOWS.includes(plan.flow)) {
     const d = plan.details;
     if (!d || !nonEmpty(d.worker?.id) || !nonEmpty(d.worker?.descriptor) || !nonEmpty(d.action)) {
       throw new NativeWriteGuardError(`${plan.flow}: preview needs worker (id + name) and action.`);
@@ -181,6 +209,10 @@ function validateFlowInputs(plan: StagedWritePlan): void {
       return;
     }
     case "change_job":
+      requireUserEffectiveDate(plan);
+      return;
+    case "leave_of_absence":
+      // Start date is the effective date: required, asked from the user, never defaulted.
       requireUserEffectiveDate(plan);
       return;
     case "performance_review": {
@@ -247,7 +279,16 @@ export function validateStagedWritePlan(plan: StagedWritePlan): void {
     }
     if (!def.stage.includes(s.tool)) throw new NativeWriteGuardError(`${s.tool} is not a stage step of '${plan.flow}'.`);
   }
-  if (!def.open && plan.stage.length) throw new NativeWriteGuardError(`Flow '${plan.flow}' is single-step; no stage calls.`);
+  if (def.externalEvent) {
+    if (!nonEmpty(plan.eventWid)) {
+      throw new NativeWriteGuardError(
+        `Flow '${plan.flow}': no open-event tool exists in this tenant; supply the existing change event WID (eventWid).`,
+      );
+    }
+    if (!plan.stage.length) throw new NativeWriteGuardError(`Flow '${plan.flow}' needs at least one stage step.`);
+  } else if (!def.open && plan.stage.length) {
+    throw new NativeWriteGuardError(`Flow '${plan.flow}' is single-step; no stage calls.`);
+  }
   validateFlowInputs(plan);
   for (const c of [plan.open, ...plan.stage, plan.submit].filter((c): c is NativeCall => !!c)) {
     const t = getByName(c.tool);
@@ -389,14 +430,20 @@ export async function commitNativeWrite(
   // a denial here throws and is never pinned to the idempotency key.
   for (const c of [plan.open, ...plan.stage, plan.submit]) if (c) assertAgentReadyCallAllowed(caller.roles, c.tool, ctx);
 
-  let eventWid: string | undefined;
+  const external = Boolean(NATIVE_WRITE_FLOWS[plan.flow].externalEvent);
+  let eventWid: string | undefined = external ? plan.eventWid : undefined;
+  let touched = false; // an event we opened or staged on may need discarding on failure
   let result: NativeWriteResult;
   try {
     if (plan.open) {
       eventWid = adapter.eventWidFrom(await run(plan.open));
       if (!eventWid) throw new NativeWriteGuardError(`${plan.open.tool} returned no event WID.`);
+      touched = true;
     }
-    for (const s of plan.stage) await run(s, eventWid);
+    for (const s of plan.stage) {
+      touched = true;
+      await run(s, eventWid);
+    }
     const submitResult = await run(plan.submit, eventWid);
     result = { replayed: false, submitted: true, flow: plan.flow, eventWid, submitResult };
   } catch (e) {
@@ -405,7 +452,7 @@ export async function commitNativeWrite(
       submitted: false,
       flow: plan.flow,
       eventWid,
-      discardRequired: Boolean(eventWid),
+      discardRequired: touched && Boolean(eventWid),
       error: e instanceof Error ? e.message : String(e),
     };
   }

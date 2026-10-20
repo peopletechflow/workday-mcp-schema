@@ -13,6 +13,7 @@
 
 export const MANAGER_CHAIN_MAX_HOPS = 10;
 export const INDIRECT_REPORTS_MAX_DEPTH = 5;
+export const DIVERSITY_MIN_GROUP_SIZE = 5;
 
 export type AgentReadyRecipe = {
   name: string;
@@ -21,7 +22,8 @@ export type AgentReadyRecipe = {
   /** Native tools invoked, in order. */
   tools: readonly string[];
   steps: readonly string[];
-  cap: { kind: "hops" | "depth"; max: number };
+  /** hops/depth: traversal cap; minGroupSize: k-anonymity threshold for aggregate output. */
+  cap: { kind: "hops" | "depth" | "minGroupSize"; max: number };
 };
 
 export const AGENT_READY_RECIPES = {
@@ -52,6 +54,22 @@ export const AGENT_READY_RECIPES = {
       `Stop at depth ${INDIRECT_REPORTS_MAX_DEPTH} (truncated=true) and never revisit a worker (cycle guard).`,
     ],
     cap: { kind: "depth", max: INDIRECT_REPORTS_MAX_DEPTH },
+  },
+  aggregate_diversity: {
+    name: "aggregate_diversity",
+    description:
+      "Read-only, AGGREGATE-ONLY. Counts per ethnicity bucket for an org in the caller's verified org scope; " +
+      `buckets smaller than ${DIVERSITY_MIN_GROUP_SIZE} are suppressed; never returns per-person ethnicity.`,
+    readOnly: true,
+    tools: ["list_organization_members", "find_worker_personal_information", "find_ethnicity_details"],
+    steps: [
+      "Verify the org is in the caller's org scope (hr_partner OrgScope; admin any).",
+      "list_organization_members(org) -> member WIDs (paged).",
+      "For each member: find_worker_personal_information -> ethnicity (kept in memory only; undisclosed -> 'Not disclosed').",
+      `Count per bucket; suppress buckets with count < ${DIVERSITY_MIN_GROUP_SIZE}; hide totals that would let suppressed counts be derived.`,
+      "Return counts only: no worker ids, names or per-person values.",
+    ],
+    cap: { kind: "minGroupSize", max: DIVERSITY_MIN_GROUP_SIZE },
   },
 } as const satisfies Record<string, AgentReadyRecipe>;
 

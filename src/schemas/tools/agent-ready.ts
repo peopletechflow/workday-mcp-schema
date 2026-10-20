@@ -20,6 +20,7 @@ const CatalogToolSummary = z.object({
   securityDomains: z.array(z.string()).optional(),
   notes: z.string().optional(),
   sensitive: z.boolean().optional(),
+  specialCategory: z.boolean().optional(),
   skills: z.array(z.string()).optional(),
   businessProcess: z.object({ flow: z.string(), step: z.enum(["open", "stage", "submit"]) }).optional(),
   requiredPromptTools: z.array(z.string()).optional(),

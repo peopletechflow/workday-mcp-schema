@@ -26,6 +26,7 @@ function toSummary(t: AgentReadyToolDefinition) {
     ...(t.securityDomains ? { securityDomains: t.securityDomains } : {}),
     ...(t.notes ? { notes: t.notes } : {}),
     ...(t.sensitive ? { sensitive: true } : {}),
+    ...(t.specialCategory ? { specialCategory: true } : {}),
     ...(t.skills ? { skills: [...t.skills] } : {}),
     ...(t.businessProcess ? { businessProcess: t.businessProcess } : {}),
     ...(t.requiredPromptTools ? { requiredPromptTools: t.requiredPromptTools } : {}),

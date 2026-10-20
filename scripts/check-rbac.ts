@@ -10,6 +10,10 @@ import {
   isAgentReadyWrite,
   targetKindFor,
   verifyTeamScope,
+  verifyOrgScope,
+  verifyWorkerInOrgScope,
+  filterToOrgScope,
+  ORG_PROOF_REQUIRED,
   ROLES,
   TOOL_PERMISSIONS,
   type AgentReadyCallContext,
@@ -29,6 +33,10 @@ import {
   SENSITIVE_WORKER_DATA_TOOLS,
   MANAGER_ACTIONS_DISCOVERY_SOURCE,
   MANAGER_ACTIONS_SKILL_TOOLS,
+  HR_PARTNER_DISCOVERY_SOURCE,
+  HR_PARTNER_SKILL_TOOLS,
+  SPECIAL_CATEGORY_TENANT_TOOLS,
+  DIVERSITY_MIN_GROUP_SIZE,
   TENANT_DISCOVERED_TOOLS,
   TENANT_DISCOVERY_SOURCE,
   WORKER_DATA_SKILL_TOOLS,
@@ -41,6 +49,7 @@ import {
 } from "../src/safety/native-write-guard.js";
 import { PreviewStore } from "../src/safety/preview-store.js";
 import { IdempotencyStore } from "../src/safety/idempotency.js";
+import { aggregateBuckets, computeDiversityAggregate } from "../src/safety/diversity.js";
 
 let failed = 0;
 const check = (name: string, fn: () => void) => {
@@ -82,6 +91,10 @@ const PAYROLL_INPUT_READS = [
   "list_request_payroll_input_workers", "list_request_payroll_input_pay_components",
   "list_request_payroll_input_event_input_types_for_pay_component",
 ];
+const HR_READS = HR_PARTNER_SKILL_TOOLS.filter((t) => t.readOnly).map((t) => t.name);
+const HR_WRITES = HR_PARTNER_SKILL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name);
+const ID_TOOLS = HR_WRITES.filter((n) => n !== "request_worker_leave_of_absence");
+const SPECIAL = [...ID_TOOLS, "find_ethnicity", "find_ethnicity_details"];
 const isNoneTarget = (n: string) => targetKindFor(n) === "none";
 // Verified team for SELF_WID: r1 (manager) -> r3 (manager) -> r4 ...; r2 IC. Depth cap 5.
 const chainReports: Record<string, { id: string; hasManagerRole: boolean }[]> = {
@@ -98,9 +111,30 @@ const teamAdapter = (selfWid = SELF_WID) => ({
 });
 const TEAM = await verifyTeamScope(teamAdapter());
 const TEAM_CTX = (target: string): AgentReadyCallContext => ({ contextInstanceId: target, callerWid: SELF_WID, teamScope: TEAM });
+// Org tree: hrRoot -> hrA -> hrB -> ... -> hrF (depth 6, beyond cap); manager manages mOrg -> mSub.
+const orgChildren: Record<string, string[]> = {
+  hrRoot: ["hrA"], hrA: ["hrB"], hrB: ["hrC"], hrC: ["hrD"], hrD: ["hrE"], hrE: ["hrF"], mOrg: ["mSub"],
+};
+const workerOrgs: Record<string, string[]> = { w_in: ["hrC"], w_out: ["elsewhere"], w_deep: ["hrF"] };
+const orgAdapter = (roots: string[], selfWid = SELF_WID) => ({
+  resolveSelf: async () => ({ id: selfWid }),
+  listRootOrgIds: async () => roots,
+  listChildOrgIds: async (o: string) => orgChildren[o] ?? [],
+});
+const HR_SCOPE = await verifyOrgScope("hr_partner", orgAdapter(["hrRoot"]));
+const MGR_ORG_SCOPE = await verifyOrgScope("manager", orgAdapter(["mOrg"]));
+const listWorkerOrgs = async (w: string) => workerOrgs[w] ?? [];
+const HR_PROOF_IN = await verifyWorkerInOrgScope(HR_SCOPE, "w_in", listWorkerOrgs);
+const HR_W = (target: string, extra: AgentReadyCallContext = {}): AgentReadyCallContext => ({
+  contextInstanceId: target, callerWid: SELF_WID, orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN, ...extra,
+});
 const HR_EXCLUDED = [...PAYSLIPS, "find_latest_employee_enrollment_event", "get_employee_enrollment_history", "view_benefits_dependent"];
 
-check("catalog: 13 worker-data + 34 self-service + 41 manager-actions tools, seeds kept, deduped", () => {
+check("catalog: 13 worker-data + 34 self-service + 41 manager-actions + 21 hr-partner tools, seeds kept, deduped", () => {
+  if (HR_PARTNER_SKILL_TOOLS.length !== 21 || HR_READS.length !== 10 || HR_WRITES.length !== 11) {
+    throw new Error(`hr-partner ${HR_PARTNER_SKILL_TOOLS.length} r${HR_READS.length} w${HR_WRITES.length}`);
+  }
+  for (const t of HR_PARTNER_SKILL_TOOLS) if (t.source !== HR_PARTNER_DISCOVERY_SOURCE) throw new Error(`${t.name} bad source`);
   if (MANAGER_ACTIONS_SKILL_TOOLS.length !== 41 || MA_READS.length !== 35 || MA_WRITES.length !== 6) {
     throw new Error(`manager-actions ${MANAGER_ACTIONS_SKILL_TOOLS.length} r${MA_READS.length} w${MA_WRITES.length}`);
   }
@@ -111,7 +145,7 @@ check("catalog: 13 worker-data + 34 self-service + 41 manager-actions tools, see
   if (SS_READS.length !== 19 || SS_WRITES.length !== 15) throw new Error(`reads ${SS_READS.length} writes ${SS_WRITES.length}`);
   const names = AGENT_READY_CATALOG.tools.map((t) => t.name);
   if (new Set(names).size !== names.length) throw new Error("duplicate catalog names");
-  if (names.length !== 94 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
+  if (names.length !== 115 || AGENT_READY_CATALOG.meta.toolCount !== names.length) throw new Error(`catalog ${names.length}`);
   for (const t of TENANT_DISCOVERED_TOOLS) if (!names.includes(t.name)) throw new Error(`missing ${t.name}`);
   if (!names.includes("getTimeOffEntries")) throw new Error("public seed dropped");
   const shared = WORKER_DATA_SKILL_TOOLS.filter((t) => t.skills?.includes("self-service-skill")).map((t) => t.name);
@@ -155,9 +189,10 @@ check("sensitive flags: personal info, addresses, payslips, dependents, legal na
     "find_worker_personal_information", "list_worker_addresses", ...PAYSLIPS, "view_benefits_dependent", "find_worker_legal_name",
     "find_worker_history_events", "find_expense_lines", "find_worker_anytime_feedback_received", "request_payroll_input",
     "list_request_payroll_input_workers",
+    "list_worker_history_events", ...SPECIAL,
   ];
   if ([...SENSITIVE_TENANT_TOOLS].sort().join() !== want.sort().join()) throw new Error(`got ${SENSITIVE_TENANT_TOOLS}`);
-  for (const n of SENSITIVE_TENANT_TOOLS.filter((x) => !MA_READS.includes(x) && !MA_WRITES.includes(x))) {
+  for (const n of SENSITIVE_TENANT_TOOLS.filter((x) => ![...MA_READS, ...MA_WRITES, ...HR_READS, ...HR_WRITES].includes(x))) {
     const g = AGENT_READY_TOOL_PERMISSIONS[n] ?? {};
     if (g.manager && g.manager !== "self") throw new Error(`${n}: manager beyond self`);
     denied(["manager"], n, OTHER_IN_SCOPE);
@@ -337,6 +372,102 @@ check("write grants never 'all'; actor_self only on writes", () => {
       if (isAgentReadyWrite(n) && s === "all") throw new Error(`${n}: write granted 'all'`);
       if (!isAgentReadyWrite(n) && s === "actor_self") throw new Error(`${n}: actor_self on read`);
     }
+  }
+});
+
+// ---- hr-partner-skill ----
+check("org scope: roots + descendants to depth 5; outsiders and deep orgs refused", () => {
+  for (const o of ["hrRoot", "hrA", "hrB", "hrC", "hrD", "hrE"]) if (!HR_SCOPE.orgIds.has(o)) throw new Error(`missing ${o}`);
+  if (HR_SCOPE.orgIds.has("hrF") || !HR_SCOPE.truncated) throw new Error("depth cap not applied");
+  allowed(["hr_partner"], "get_org_chart_children", HR_W("hrE"));
+  denied(["hr_partner"], "get_org_chart_children", HR_W("hrF"));
+  denied(["hr_partner"], "get_org_chart_children", HR_W("mOrg"));
+  denied(["hr_partner"], "get_org_chart_children", { contextInstanceId: "hrA", callerWid: SELF_WID, targetInScope: true }); // boolean not accepted
+  denied(["hr_partner"], "get_org_chart_children", { ...HR_W("hrA"), callerWid: "someone-else" });
+  denied(["hr_partner"], "get_org_chart_children", { contextInstanceId: "hrA", callerWid: SELF_WID,
+    orgScope: { basis: "hr_partner", callerWid: SELF_WID, orgIds: new Set(["hrA"]), truncated: false, expiresAt: Date.now() + 1e6 } }); // forged
+});
+check("hr_partner: every new read and write needs the org proof", () => {
+  for (const n of [...HR_READS, ...HR_WRITES]) {
+    if (!ORG_PROOF_REQUIRED.has(n)) throw new Error(`${n} not proof-gated`);
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.hr_partner !== "supervisory_org") throw new Error(`${n} hr not org`);
+  }
+  for (const n of HR_READS) {
+    const kind = targetKindFor(n);
+    const ctx = kind === "org" ? HR_W("hrB") : HR_W("w_in");
+    allowed(["hr_partner"], n, ctx);
+    if (kind !== "none") denied(["hr_partner"], n, { contextInstanceId: kind === "org" ? "hrB" : "w_in", callerWid: SELF_WID, targetInScope: true });
+    else denied(["hr_partner"], n, { callerWid: SELF_WID, targetInScope: true }); // lookup still needs a verified org scope
+  }
+  for (const n of HR_WRITES) {
+    allowed(["hr_partner"], n, HR_W("w_in", { previewConfirmed: true }));
+    denied(["hr_partner"], n, HR_W("w_out", { previewConfirmed: true }));
+    denied(["hr_partner"], n, { contextInstanceId: "w_in", callerWid: SELF_WID, targetInScope: true, previewConfirmed: true });
+    denied(["hr_partner"], n, HR_W("w_in")); // no preview/confirm
+  }
+});
+check("manager: no ID/passport/visa/ethnicity tools; org chart only for own team orgs", () => {
+  for (const n of [...SPECIAL, "list_organization_members", "list_worker_history_events", "request_worker_leave_of_absence",
+    "list_leave_event_statuses", "list_time_off_entry_statuses", "list_onboarding_business_process_tasks"]) {
+    if (AGENT_READY_TOOL_PERMISSIONS[n]?.manager) throw new Error(`${n} granted to manager`);
+    denied(["manager"], n, { contextInstanceId: "me", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE, teamScope: TEAM, previewConfirmed: true });
+  }
+  const M = (org: string): AgentReadyCallContext => ({ contextInstanceId: org, callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE });
+  allowed(["manager"], "get_org_chart_children", M("mSub"));
+  allowed(["manager"], "get_org_chart_parent", M("mOrg"));
+  denied(["manager"], "get_org_chart_parent", M("hrA"));
+  denied(["manager"], "get_org_chart_parent", { ...HR_W("hrA") }); // hr basis scope is not a manager scope
+  allowed(["manager"], "find_org_chart_organizations", { callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE });
+  denied(["manager"], "find_org_chart_organizations", { callerWid: SELF_WID });
+  const filtered = filterToOrgScope(MGR_ORG_SCOPE, [{ id: "mSub" }, { id: "hrA" }], (o) => o.id).map((o) => o.id).join();
+  if (filtered !== "mSub") throw new Error(`filter ${filtered}`);
+});
+check("worker_self: own ID changes + own leave only; no hr reads", () => {
+  for (const n of HR_WRITES) {
+    allowed(["worker_self"], n, ME_CONFIRMED);
+    denied(["worker_self"], n, { contextInstanceId: OTHER_WID, callerWid: SELF_WID, previewConfirmed: true, targetInScope: true });
+    denied(["worker_self"], n, { contextInstanceId: "me" });
+  }
+  for (const n of HR_READS) denied(["worker_self"], n, { contextInstanceId: "me" });
+});
+check("payroll_viewer: no hr-partner tools; admin full read + self-only writes", () => {
+  for (const n of [...HR_READS, ...HR_WRITES, "aggregate_diversity"]) {
+    denied(["payroll_viewer"], n, { ...HR_W("w_in"), contextInstanceId: "me", previewConfirmed: true });
+  }
+  for (const n of HR_READS) allowed(["admin"], n, { contextInstanceId: targetKindFor(n) === "org" ? "anyOrg" : OTHER_WID });
+  for (const n of HR_WRITES) {
+    allowed(["admin"], n, ME_CONFIRMED);
+    denied(["admin"], n, { contextInstanceId: OTHER_WID, previewConfirmed: true });
+  }
+});
+check("special category: ID tools + ethnicity flagged; only self / hr_partner / admin", () => {
+  if ([...SPECIAL_CATEGORY_TENANT_TOOLS].sort().join() !== [...SPECIAL].sort().join()) throw new Error(`got ${SPECIAL_CATEGORY_TENANT_TOOLS}`);
+  for (const n of SPECIAL_CATEGORY_TENANT_TOOLS) {
+    const roles = Object.keys(AGENT_READY_TOOL_PERMISSIONS[n] ?? {}).sort().join();
+    const ok = ["admin,hr_partner", "admin,hr_partner,worker_self"];
+    if (!ok.includes(roles)) throw new Error(`${n}: ${roles}`);
+  }
+});
+check("diversity: k>=5 suppression, labels of small groups hidden, no per-person output", () => {
+  const vals = [...Array(7).fill("A"), ...Array(5).fill("B"), ...Array(2).fill("C"), null];
+  const r = aggregateBuckets("org", vals, 1); // k below 5 is raised to 5
+  if (r.minGroupSize !== DIVERSITY_MIN_GROUP_SIZE) throw new Error("k lowered");
+  if (r.buckets.map((b) => `${b.bucket}:${b.count}`).join() !== "A:7,B:5") throw new Error(JSON.stringify(r));
+  if (r.population !== null || r.suppressedTotal !== null) throw new Error("suppressed counts derivable"); // 3 suppressed < 5
+  const json = JSON.stringify(r);
+  if (/"C"|Not disclosed/.test(json)) throw new Error("small-group label leaked");
+  const r2 = aggregateBuckets("org", [...Array(6).fill("A"), ...Array(3).fill("B"), ...Array(3).fill("C")]);
+  if (r2.population !== 12 || r2.suppressedTotal !== 6) throw new Error(JSON.stringify(r2));
+  const r3 = aggregateBuckets("org", ["A", "A", "B", "B"]);
+  if (!r3.suppressed || r3.buckets.length || r3.population !== null) throw new Error(JSON.stringify(r3));
+});
+check("diversity recipe: hr_partner (org proof) + admin only", () => {
+  allowed(["hr_partner"], "aggregate_diversity", HR_W("hrB"));
+  denied(["hr_partner"], "aggregate_diversity", HR_W("mOrg"));
+  denied(["hr_partner"], "aggregate_diversity", { contextInstanceId: "hrB", callerWid: SELF_WID, targetInScope: true });
+  allowed(["admin"], "aggregate_diversity", { contextInstanceId: "anyOrg" });
+  for (const r of ["worker_self", "manager", "payroll_viewer"] as Role[]) {
+    denied([r], "aggregate_diversity", { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE, teamScope: TEAM });
   }
 });
 check("unmapped Agent-Ready tool fails closed", () => denied([...ROLES], "__unmapped_native__", { contextInstanceId: "me" }));
@@ -541,6 +672,62 @@ await (async () => {
     };
     await previewNativeWrite(store, { userId: "w1", roles: ["worker_self"], callerWid: SELF_WID }, fb);
     await expectThrow(() => previewNativeWrite(store, mgr, fb), "manager-only feedback to non-team");
+  });
+
+  // ---- hr-partner-skill guards ----
+  await run("org proof: outside / deep workers refused", async () => {
+    await expectThrow(() => verifyWorkerInOrgScope(HR_SCOPE, "w_out", listWorkerOrgs), "outside");
+    await expectThrow(() => verifyWorkerInOrgScope(HR_SCOPE, "w_deep", listWorkerOrgs), "beyond depth cap");
+  });
+  const hr = { userId: "h1", roles: ["hr_partner"] as Role[], callerWid: SELF_WID, scope: { orgScope: HR_SCOPE, workerOrgProof: HR_PROOF_IN } };
+  const idPlan = (extra: Partial<StagedWritePlan> = {}): StagedWritePlan => ({
+    flow: "passport_visa_change", summary: "Passport", contextInstanceId: "w_in", eventWid: "evt-ext",
+    details: { worker: { id: "w_in", descriptor: "In Scope" }, action: "Update passport", changedFields: [{ field: "passport", from: "•••1", to: "•••2" }] },
+    stage: [{ tool: "update_passport_ids", args: {} }], submit: { tool: "submit_passport_and_visa_changes", args: {} }, ...extra,
+  });
+  await run("guard: ID changes need an external event WID (gap), stage on it, org proof, approvers", async () => {
+    const store = new PreviewStore(), idem = new IdempotencyStore(), calls: string[] = [];
+    await expectThrow(() => previewNativeWrite(store, hr, idPlan({ eventWid: undefined }), { remainingSteps: steps }), "no event WID");
+    await expectThrow(() => previewNativeWrite(store, hr, idPlan({ stage: [] }), { remainingSteps: steps }), "no stage");
+    await expectThrow(() => previewNativeWrite(store, hr, idPlan({ open: { tool: "create_passport_ids", args: {} } }), { remainingSteps: steps }), "fake open");
+    await expectThrow(() => previewNativeWrite(store, hr, idPlan({ stage: [{ tool: "create_national_ids", args: {} }] }), { remainingSteps: steps }), "cross-flow stage");
+    await expectThrow(() => previewNativeWrite(store, hr, idPlan({ contextInstanceId: "w_out" }), { remainingSteps: steps }), "outside org");
+    await expectThrow(() => previewNativeWrite(store, { ...hr, scope: { targetInScope: true } }, idPlan(), { remainingSteps: steps }), "boolean scope");
+    const pv = await previewNativeWrite(store, hr, idPlan(), { remainingSteps: steps });
+    if (pv.preview.approvers.source !== "find_remaining_steps_for_business_process_event") throw new Error("approvers");
+    const r = await commitNativeWrite({ previewStore: store, idempotency: idem }, hr, { previewToken: pv.previewToken, userConfirmed: true, idempotencyKey: "id1" }, mkAdapter(calls));
+    if (!r.submitted || r.eventWid !== "evt-ext" || calls.join() !== "update_passport_ids,submit_passport_and_visa_changes") throw new Error(JSON.stringify({ r, calls }));
+    const self = { userId: "w1", roles: ["worker_self"] as Role[], callerWid: SELF_WID };
+    const gov: StagedWritePlan = { ...idPlan(), flow: "government_id_change", contextInstanceId: "me",
+      stage: [{ tool: "create_national_ids", args: {} }], submit: { tool: "submit_government_identifier_changes", args: {} } };
+    await previewNativeWrite(store, self, gov, { remainingSteps: steps });
+    await expectThrow(() => previewNativeWrite(store, self, { ...gov, contextInstanceId: OTHER_WID }, { remainingSteps: steps }), "self only");
+    await expectThrow(() => previewNativeWrite(store, { ...mgr, scope: { teamScope: TEAM, orgScope: MGR_ORG_SCOPE } }, { ...gov, contextInstanceId: "r1" }, { remainingSteps: steps }), "manager ID change");
+  });
+  await run("guard: leave of absence needs a user-provided start date", async () => {
+    const store = new PreviewStore(), self = { userId: "w1", roles: ["worker_self"] as Role[], callerWid: SELF_WID };
+    const leave = (d: Record<string, unknown> = {}): StagedWritePlan => ({
+      flow: "leave_of_absence", summary: "Leave", contextInstanceId: "me",
+      details: { worker: { id: SELF_WID, descriptor: "Me" }, action: "Request leave of absence",
+        changedFields: [{ field: "leave", to: "Parental" }], effectiveDate: "2027-01-04", effectiveDateProvidedBy: "user", ...d },
+      stage: [], submit: { tool: "request_worker_leave_of_absence", args: {} },
+    });
+    const pv = await previewNativeWrite(store, self, leave());
+    if (pv.preview.approvers.source !== "tenant-bp-config") throw new Error("approvers note");
+    await expectThrow(() => previewNativeWrite(store, self, leave({ effectiveDate: undefined })), "no start");
+    await expectThrow(() => previewNativeWrite(store, self, leave({ effectiveDateProvidedBy: undefined })), "defaulted start");
+    await previewNativeWrite(store, hr, { ...leave(), contextInstanceId: "w_in" });
+    await expectThrow(() => previewNativeWrite(store, hr, { ...leave(), contextInstanceId: "w_out" }), "hr outside org");
+  });
+  await run("diversity: computeDiversityAggregate checks RBAC and returns counts only", async () => {
+    const eth: Record<string, string | null> = {};
+    const members = Array.from({ length: 12 }, (_, i) => `p${i}`);
+    members.forEach((m, i) => (eth[m] = i < 6 ? "A" : i < 11 ? "B" : null));
+    const adapter = { listMemberIds: async () => members, ethnicityOf: async (w: string) => eth[w] ?? null };
+    const r = await computeDiversityAggregate(["hr_partner"], { contextInstanceId: "hrB", callerWid: SELF_WID, orgScope: HR_SCOPE }, adapter);
+    if (JSON.stringify(r).match(/p\d/)) throw new Error("per-person id leaked");
+    if (r.buckets.map((b) => `${b.bucket}:${b.count}`).join() !== "A:6,B:5" || r.population !== null) throw new Error(JSON.stringify(r));
+    await expectThrow(() => computeDiversityAggregate(["manager"], { contextInstanceId: "mOrg", callerWid: SELF_WID, orgScope: MGR_ORG_SCOPE }, adapter), "manager");
   });
 })();
 

@@ -624,15 +624,105 @@ export const MANAGER_ACTIONS_SKILL_TOOLS: AgentReadyToolDefinition[] = [
     notes: "Admin/payroll-domain level; 403 if the caller lacks the payroll domain." },
 ];
 
+// ---------------------------------------------------------------------------
+// hr-partner-skill (Extend app peopletechHrBaseline_rjqhll), discovered 2026-10-20.
+// 49 tools: 28 already catalogued (the notes do not list which, so they are NOT tagged with
+// this skill), 21 new (10 reads, 11 writes). Mirror: extend/skills/hr-partner-skill.md
+// Gap: passport/visa and government-identifier writes run "within an open change event", but
+// no tool to OPEN such an event is exposed — the guard requires an externally supplied event WID.
+// ---------------------------------------------------------------------------
+
+const HR_PARTNER_SKILL = "hr-partner-skill";
+export const HR_PARTNER_DISCOVERY_SOURCE = `${TENANT_DISCOVERY_SOURCE} hr-partner-skill`;
+
+const hrRead = {
+  kind: "basic",
+  operationType: "VIEW",
+  readOnly: true,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: HR_PARTNER_DISCOVERY_SOURCE,
+  skills: [HR_PARTNER_SKILL],
+} as const;
+const hrWrite = {
+  kind: "advanced",
+  readOnly: false,
+  wid: null, // not exposed by the Developer Agent UI — never invent
+  source: HR_PARTNER_DISCOVERY_SOURCE,
+  skills: [HR_PARTNER_SKILL],
+} as const;
+const ORGS = "Workforce / Organizations";
+const IDS = "Workforce / Personal Data / Identifiers";
+const ID_GAP_NOTE = "Runs within an open change event; no open-event tool is exposed (gap) — event WID must be supplied.";
+const idWrite = (
+  name: string,
+  operationType: "CREATE" | "PATCH",
+  flow: "passport_visa_change" | "government_id_change",
+  description: string,
+): AgentReadyToolDefinition => ({
+  ...hrWrite, name, operationType, productArea: IDS, category: "Identifiers (special category)",
+  sensitive: true, specialCategory: true, description,
+  businessProcess: { flow, step: "stage" }, inputSchemaStatus: "unknown", notes: ID_GAP_NOTE,
+});
+
+export const HR_PARTNER_SKILL_TOOLS: AgentReadyToolDefinition[] = [
+  // ---- reads (10) ----
+  { ...hrRead, name: "find_org_chart_organizations", productArea: ORGS, category: "Org Chart",
+    description: "Search organizations by name (org chart).", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "get_org_chart_children", productArea: ORGS, category: "Org Chart",
+    description: "Sub-organizations of an organization.", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "get_org_chart_parent", productArea: ORGS, category: "Org Chart",
+    description: "Parent organization of an organization.", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "list_organization_members", productArea: ORGS, category: "Organization Members",
+    description: "Members of any organization type (cost centers, supervisory orgs, etc.).", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "list_leave_event_statuses", productArea: "Workforce / Absence", category: "Leave of Absence",
+    description: "Leave event status WIDs (e.g. In Progress).", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "list_time_off_entry_statuses", productArea: "Workforce / Absence", category: "Time Off",
+    description: "Time-off entry status WIDs.", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "list_onboarding_business_process_tasks", productArea: "Business Process / Onboarding", category: "Onboarding",
+    description: "Onboarding tasks for the signed-in user or a new hire.", inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "list_worker_history_events", productArea: "Workforce / Staffing", category: "Worker History (sensitive)", sensitive: true,
+    description: "Business-process history of a worker, filterable by BP type (distinct from find_worker_history_events).",
+    inputSchemaStatus: "unknown" },
+  { ...hrRead, name: "find_ethnicity", productArea: "Workforce / Personal Data", category: "Ethnicity (special category)",
+    sensitive: true, specialCategory: true, description: "Ethnicity lookup values.", inputSchemaStatus: "unknown",
+    notes: "GDPR Art. 9 special-category data; diversity output is aggregate-only." },
+  { ...hrRead, name: "find_ethnicity_details", productArea: "Workforce / Personal Data", category: "Ethnicity (special category)",
+    sensitive: true, specialCategory: true, description: "Ethnicity lookup value details.", inputSchemaStatus: "unknown",
+    notes: "GDPR Art. 9 special-category data; diversity output is aggregate-only." },
+  // ---- writes (11) ----
+  { ...hrWrite, name: "request_worker_leave_of_absence", operationType: "CREATE", productArea: "Workforce / Absence", category: "Leave of Absence",
+    description: "Requests a leave of absence for a worker (leave type from find_worker_eligible_absence_types, start, end, reason).",
+    businessProcess: { flow: "leave_of_absence", step: "submit" }, inputSchemaStatus: "unknown",
+    notes: "Fields: worker, leave type, start, end, reason (exact param names not captured)." },
+  idWrite("create_passport_ids", "CREATE", "passport_visa_change", "Stages a new passport ID on an open change event."),
+  idWrite("update_passport_ids", "PATCH", "passport_visa_change", "Stages a passport ID update on an open change event."),
+  idWrite("create_visa_ids", "CREATE", "passport_visa_change", "Stages a new visa ID on an open change event."),
+  idWrite("update_visa_ids", "PATCH", "passport_visa_change", "Stages a visa ID update on an open change event."),
+  { ...hrWrite, name: "submit_passport_and_visa_changes", productArea: IDS, category: "Identifiers (special category)",
+    sensitive: true, specialCategory: true, description: "Submits staged passport and visa changes.",
+    businessProcess: { flow: "passport_visa_change", step: "submit" }, inputSchemaStatus: "unknown", notes: ID_GAP_NOTE },
+  idWrite("create_national_ids", "CREATE", "government_id_change", "Stages a new national ID on an open change event."),
+  idWrite("update_national_ids", "PATCH", "government_id_change", "Stages a national ID update on an open change event."),
+  idWrite("create_government_ids", "CREATE", "government_id_change", "Stages a new government ID on an open change event."),
+  idWrite("update_government_ids", "PATCH", "government_id_change", "Stages a government ID update on an open change event."),
+  { ...hrWrite, name: "submit_government_identifier_changes", productArea: IDS, category: "Identifiers (special category)",
+    sensitive: true, specialCategory: true, description: "Submits staged national/government identifier changes.",
+    businessProcess: { flow: "government_id_change", step: "submit" }, inputSchemaStatus: "unknown", notes: ID_GAP_NOTE },
+];
+
 /**
  * Every tenant-discovered tool: worker-data-skill 13 + self-service-skill 34 new +
- * manager-actions-skill 41 new = 88 (shared tools appear once, tagged with every skill).
+ * manager-actions-skill 41 new + hr-partner-skill 21 new = 109 (shared tools appear once).
  */
 export const TENANT_DISCOVERED_TOOLS: AgentReadyToolDefinition[] = [
   ...tagShared(WORKER_DATA_SKILL_TOOLS),
   ...tagShared(SELF_SERVICE_SKILL_TOOLS),
   ...MANAGER_ACTIONS_SKILL_TOOLS,
+  ...HR_PARTNER_SKILL_TOOLS,
 ];
+
+/** Special-category tools (ethnicity, passport/visa/national/government IDs). */
+export const SPECIAL_CATEGORY_TENANT_TOOLS: readonly string[] = TENANT_DISCOVERED_TOOLS.filter((t) => t.specialCategory).map((t) => t.name);
 
 /**
  * All tenant tools flagged sensitive: personal info, home address, payslips, dependents, legal name,
@@ -646,5 +736,10 @@ export const KNOWN_TOOL_GAPS = [
     skill: SELF_SERVICE_SKILL,
     tool: "update_personal_information_marital_status",
     note: "Referenced as the stage step of personal_information_change but missing from the skill's tool list; add it in the Developer Agent, then catalogue it.",
+  },
+  {
+    skill: HR_PARTNER_SKILL,
+    tool: "(open passport/visa or government-identifier change event)",
+    note: "ID writes run within an open change event, but no open-event tool is exposed; the guard requires an externally supplied event WID.",
   },
 ] as const;

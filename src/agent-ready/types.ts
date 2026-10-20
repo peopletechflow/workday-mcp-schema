@@ -42,6 +42,12 @@ export type AgentReadyToolDefinition = {
   securityDomains?: string[];
   /** Exposes sensitive personal / pay / dependent data (stricter RBAC, see src/rbac/agent-ready.ts). */
   sensitive?: boolean;
+  /**
+   * Special-category / highly sensitive PII (GDPR Art. 9 data such as ethnicity; passport, visa,
+   * national and government IDs). Implies `sensitive`. Never returned per person to roles other
+   * than self / hr_partner / admin; diversity is aggregate-only (src/safety/diversity.ts).
+   */
+  specialCategory?: boolean;
   /** Extend skills that use this tool (tenant-discovered rows). */
   skills?: readonly string[];
   /**
