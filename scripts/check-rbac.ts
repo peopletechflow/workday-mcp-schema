@@ -5,7 +5,16 @@ import {
   AGENT_READY_TOOL_PERMISSIONS,
   assertAgentReadyCallAllowed,
   assertToolAllowed,
+  assertToolAllowedForUser,
+  assertAgentReadyCallAllowedForUser,
   RbacDeniedError,
+  AgentReadyWriteDeniedError,
+  InMemoryAssignmentStore,
+  grantPermission,
+  denyPermission,
+  permissionIdForTool,
+  buildPermissionCatalog,
+  isKnownPermissionId,
   ROLE_DESCRIPTIONS,
   isAgentReadyWrite,
   targetKindFor,
@@ -95,6 +104,91 @@ check("worker_self denied manager approve", () => {
 check("unmapped tool fails closed", () => {
   try { assertToolAllowed(["admin", "manager", "worker_self"], "__unmapped__"); } catch (e) { if (e instanceof RbacDeniedError) return; throw e; }
   throw new Error("expected denial");
+});
+
+// ---- User permission assignments (lowest level) ----
+check("permission catalog covers layer3 + agent-ready tools", () => {
+  const cat = buildPermissionCatalog();
+  if (!cat.some((e) => e.permissionId === "tool:get_my_time_off_balance" && e.source === "layer3")) throw new Error("missing layer3");
+  if (!cat.some((e) => e.permissionId === "tool:find_payslips" && e.source === "agent_ready")) throw new Error("missing agent_ready");
+  if (!isKnownPermissionId("tool:get_my_time_off_balance")) throw new Error("known id");
+  if (isKnownPermissionId("tool:__nope__")) throw new Error("unknown should be false");
+});
+check("deny beats role for Layer-3 tool", () => {
+  const store = new InMemoryAssignmentStore();
+  const pid = permissionIdForTool("get_my_time_off_balance");
+  store.set({ userId: "u1", roles: ["worker_self"], grants: [], denies: [pid], updatedAt: new Date().toISOString() });
+  try {
+    assertToolAllowedForUser({ userId: "u1", roles: ["worker_self"], toolName: "get_my_time_off_balance", assignments: store });
+  } catch (e) {
+    if (e instanceof RbacDeniedError && e.reason === "deny") return;
+    throw e;
+  }
+  throw new Error("expected deny");
+});
+check("grant without role allows Layer-3 tool", () => {
+  const store = new InMemoryAssignmentStore();
+  const pid = permissionIdForTool("list_my_team");
+  store.set({ userId: "u2", roles: ["worker_self"], grants: [pid], denies: [], updatedAt: new Date().toISOString() });
+  // worker_self alone cannot list_my_team; grant unlocks it.
+  assertToolAllowedForUser({ userId: "u2", roles: ["worker_self"], toolName: "list_my_team", assignments: store });
+});
+check("grant cannot bypass Agent-Ready write preview", () => {
+  const store = new InMemoryAssignmentStore();
+  const write = "create_worker_time_off_request"; // self-service write; previewConfirmed required
+  const pid = permissionIdForTool(write);
+  store.set({ userId: "u3", roles: ["worker_self"], grants: [pid], denies: [], updatedAt: new Date().toISOString() });
+  try {
+    assertAgentReadyCallAllowedForUser({
+      userId: "u3",
+      roles: ["worker_self"],
+      toolName: write,
+      assignments: store,
+      ctx: { contextInstanceId: "me", callerWid: "self-wid" },
+    });
+  } catch (e) {
+    if (e instanceof AgentReadyWriteDeniedError) return;
+    throw e;
+  }
+  throw new Error("expected write preview denial");
+});
+check("unknown permission id denied on admin grant", () => {
+  const store = new InMemoryAssignmentStore();
+  try {
+    grantPermission(store, ["admin"], "u4", "tool:__unknown_tool__");
+  } catch (e) {
+    if (e instanceof Error && /Unknown permission/.test(e.message)) return;
+    throw e;
+  }
+  throw new Error("expected unknown permission failure");
+});
+check("non-admin cannot manage assignments", () => {
+  const store = new InMemoryAssignmentStore();
+  try {
+    denyPermission(store, ["worker_self"], "u5", permissionIdForTool("get_my_time_off_balance"));
+  } catch (e) {
+    if (e instanceof Error && /admin role/.test(e.message)) return;
+    throw e;
+  }
+  throw new Error("expected admin requirement");
+});
+check("deny beats grant and role for Agent-Ready", () => {
+  const store = new InMemoryAssignmentStore();
+  const pid = permissionIdForTool("find_payslips");
+  store.set({ userId: "u6", roles: ["worker_self", "admin"], grants: [pid], denies: [pid], updatedAt: new Date().toISOString() });
+  try {
+    assertAgentReadyCallAllowedForUser({
+      userId: "u6",
+      roles: ["worker_self", "admin"],
+      toolName: "find_payslips",
+      assignments: store,
+      ctx: { contextInstanceId: "me", callerWid: "self-wid" },
+    });
+  } catch (e) {
+    if (e instanceof RbacDeniedError && e.reason === "deny") return;
+    throw e;
+  }
+  throw new Error("expected deny");
 });
 
 // ---- Layer-1 tenant-discovered Agent-Ready tools ----

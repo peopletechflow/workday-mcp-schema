@@ -17,7 +17,7 @@ import { registerAgentReadyCatalog } from "./tools/agent-ready-catalog.js";
 import { TOOL_REGISTRY, assertRegistryInvariants } from "./tools/registry.js";
 import { FixtureWorkdayDomainClient } from "./workday/domain-fixtures.js";
 import { HttpWorkdayDomainClient } from "./workday/domain.js";
-import { resolveRolesFromEnv } from "./rbac/index.js";
+import { createAssignmentStore, resolveRolesFromEnv, type Role } from "./rbac/index.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -38,7 +38,13 @@ async function main(): Promise<void> {
 
   // Fixture/dev: roles from WORKDAY_USER_ROLES. Production: derive from Workday security groups.
   const userRoles = resolveRolesFromEnv();
-  const resolveUserRoles = () => userRoles;
+  // Lowest-level user grants/denies (JSON file + WORKDAY_USER_GRANTS / WORKDAY_USER_DENIES).
+  const assignments = createAssignmentStore();
+  const resolveUserRoles = (): Role[] => {
+    const a = assignments.get(resolveUserId());
+    if (a?.roles?.length) return a.roles;
+    return userRoles;
+  };
 
   const server = new McpServer({
     name: "workday-mcp-schema",
@@ -56,6 +62,7 @@ async function main(): Promise<void> {
     pendingPkce,
     resolveUserId,
     resolveUserRoles,
+    assignments,
   };
 
   // Track every registration so the registry invariant check sees the real surface.

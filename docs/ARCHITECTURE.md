@@ -41,14 +41,15 @@ Use this layer when the business process is proprietary to the tenant and belong
 - Describe every request and response property. Leave no empty header/query rows.
 - Deploy through App Hub, register the **Action ID** in the agent skill, and call it via the Orchestrate MCP client.
 
-### 3. External baseline (this repo)
+### 3. External baseline (this repo) — enterprise custom MCP
 Use this layer when you need:
 - Cross-tenant patterns that can be reused across customers.
 - Stronger write guardrails: preview → commit, idempotency keys, an append-only audit log.
 - Composition across several systems (Workday + others).
 - Process or org complexity that native tools + Orchestrate don't cover safely.
+- **Enterprise controls:** per-user OAuth + role RBAC + **user permission assignments** (lowest-level grants/denies) + an **AI SDK** agent loop (`src/ai/`) with preview/commit/audit.
 
-These invariants stay fixed: **per-user OAuth**, **no shared service account**, **no raw passthrough tool**, **payroll write forbidden**, and RBAC is checked before every Workday call.
+These invariants stay fixed: **per-user OAuth**, **no shared service account**, **no raw passthrough tool**, **payroll write forbidden**, RBAC (roles + user assignments) checked before every Workday call, and **all model calls go through `src/ai/`** (Vercel AI SDK + AI Gateway; no raw provider fetch elsewhere).
 
 ## Decision tree
 
@@ -69,4 +70,4 @@ Does a native Agent-Ready tool (Basic/Advanced + Prompt) cover it?
 - Authorization stacks up: ASOR skill **Available To** → this server's RBAC (`src/rbac/`) → Workday security groups on the user's token. Workday's check is the one that decides.
 
 ## RBAC overview
-Baseline roles: `worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin` (admin = full read under its own sign-in; writes only on self, preview + confirm). Each maps to a Workday security group and the skill's Available To list. `src/rbac/permissions.ts` maps every registered tool to its allowed roles. `registerRead` / `registerWritePair` in `src/tools/framework.ts` call `assertToolAllowed` before sign-in or any Workday request. Startup and `npm run check:rbac` fail if any tool has no mapping. Details: [RBAC.md](./RBAC.md).
+Baseline roles: `worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin` (admin = full read under its own sign-in; writes only on self, preview + confirm). Each maps to a Workday security group and the skill's Available To list. `src/rbac/permissions.ts` maps every registered tool to its allowed roles. `registerRead` / `registerWritePair` in `src/tools/framework.ts` call `assertToolAllowedForUser` (roles + grants/denies) before sign-in or any Workday request. Startup and `npm run check:rbac` fail if any tool has no mapping. Details: [RBAC.md](./RBAC.md).

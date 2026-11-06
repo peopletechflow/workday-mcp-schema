@@ -2,7 +2,7 @@
 
 A coarse, fail-closed authorization layer that runs **before** any Workday call. It does not replace Workday security: the user's own OAuth token is still checked by Workday, and Workday has the final say.
 
-Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `index.ts`). See [ARCHITECTURE.md](./ARCHITECTURE.md).
+Code: `src/rbac/` (`roles.ts`, `permissions.ts`, `enforce.ts`, `permission-ids.ts`, `assignments.ts`, `user-enforce.ts`, `index.ts`). See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Roles (baseline, adjustable)
 | Role | Scope |
@@ -127,6 +127,34 @@ Writes are self-only for every role. `assertAgentReadyCallAllowed` refuses a wri
 - **Hard refusals** (`ADMIN_HARD_REFUSALS`): compensation, termination/rehire, hire/pre-hire/onboarding, org changes, security changes and any job/position change for another worker. No such write is in the skill; any catalogued write matching them is never granted to admin beyond `self` (e.g. `initiate_change_job` on another worker is refused).
 - **Sensitive field gate** (`src/safety/sensitive-fields.ts`): national ID, bank and passport (and visa) fields are hidden in any response unless the request explicitly names one field category for one named worker and the response is about exactly that worker. The response then carries "⚠️ Note: access to this field is logged by Workday." and an `accessLog` record for the audit log.
 - **Demographics** (`src/safety/diversity.ts`): per-person reads of `find_worker_personal_information`, ethnicity, gender or marital status for more than one worker are refused (`assertSingleWorkerDemographicRead`); use `computeDemographicAggregate` (recipe `aggregate_diversity` RBAC, counts only, groups under 5 suppressed).
+
+
+## User permission assignments (lowest level)
+
+Enterprise Layer-3 adds **per-user** grants and denies on top of role→tool maps. Atomic permission ids are `tool:<toolName>` for every Layer-3 registered tool and every mapped Agent-Ready / recipe tool (`src/rbac/permission-ids.ts`).
+
+### `UserPermissionAssignment`
+| Field | Meaning |
+|---|---|
+| `userId` | Session user id |
+| `roles` | Baseline roles (still used) |
+| `grants` | Permission ids explicitly allowed for this user |
+| `denies` | Permission ids explicitly blocked |
+| `updatedAt` / `updatedBy` | Audit metadata |
+
+Store: `src/rbac/assignments.ts` (`AssignmentStore`, `InMemoryAssignmentStore`, optional JSON via `WORKDAY_RBAC_ASSIGNMENTS_PATH`). Dev seed: `WORKDAY_USER_GRANTS` / `WORKDAY_USER_DENIES` for `WORKDAY_USER_ID`.
+
+### Resolution order (fail closed)
+1. Permission id in `denies` → **DENY** (wins over roles and grants)
+2. Permission id in `grants` → **ALLOW** at the permission layer
+3. Else if any of the user's roles allows the tool via `TOOL_PERMISSIONS` / Agent-Ready maps → **ALLOW**
+4. Else → **DENY**
+
+Grants never skip team / org / pay-group proofs, awaiting-approver checks, payroll-domain checks, or preview→confirm write requirements. Workday security on the user's token remains authoritative.
+
+Admin management (code-level, requires `admin` role): `listPermissions`, `getUserAssignment`, `setUserAssignment`, `grantPermission`, `denyPermission`, `clearGrant`, `clearDeny`.
+
+Enforcement: `assertToolAllowedForUser` / `assertAgentReadyCallAllowedForUser` in `src/rbac/user-enforce.ts`, wired from `src/tools/framework.ts`.
 
 ## Mapping to Workday
 | RBAC role | Workday security group (example) | ASOR agent skill "Available To" |

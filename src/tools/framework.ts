@@ -15,7 +15,8 @@ import { WorkdayApiError } from "../workday/client.js";
 import type { ToolContract } from "../schemas/tools/contract.js";
 import type { McpToolError } from "../schemas/errors.js";
 import type { Role } from "../rbac/index.js";
-import { assertToolAllowed, RbacDeniedError } from "../rbac/index.js";
+import type { AssignmentStore } from "../rbac/index.js";
+import { assertToolAllowedForUser, RbacDeniedError } from "../rbac/index.js";
 
 export type ToolDeps = {
   config: AppConfig;
@@ -28,6 +29,8 @@ export type ToolDeps = {
   resolveUserId: () => string;
   /** Caller roles (env in fixtures; Workday security groups in production). */
   resolveUserRoles: () => Role[];
+  /** Lowest-level user permission assignments (grants/denies). Optional; fail closed without grants. */
+  assignments?: AssignmentStore;
 };
 
 export type CallCtx = { userId: string; accessToken: string };
@@ -103,7 +106,7 @@ export function registerRead<I extends z.ZodRawShape, O extends z.ZodRawShape>(
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, c.name);
-        assertToolAllowed(deps.resolveUserRoles(), c.name);
+        assertToolAllowedForUser({ userId, roles: deps.resolveUserRoles(), toolName: c.name, assignments: deps.assignments });
         const accessToken = await signIn(deps, userId);
         const body = await handler({ userId, accessToken }, args as In<I>);
         const res = ok(c, body);
@@ -166,7 +169,7 @@ export function registerWritePair<
       const auditInputs = { idempotencyKey: args.idempotencyKey };
       try {
         assertToolEnabled(deps.config, k.name);
-        assertToolAllowed(deps.resolveUserRoles(), k.name);
+        assertToolAllowedForUser({ userId, roles: deps.resolveUserRoles(), toolName: k.name, assignments: deps.assignments });
         if (args.userConfirmed !== true) {
           throw new ToolUserError("CONFIRMATION_REQUIRED", "userConfirmed must be true before committing a write.");
         }

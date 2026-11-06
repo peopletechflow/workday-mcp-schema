@@ -27,7 +27,9 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
+    "@ai-sdk/mcp": "^2.0.91",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "ai": "^7.0.163",
     "zod": "^3.25.0"
   },
   "devDependencies": {
