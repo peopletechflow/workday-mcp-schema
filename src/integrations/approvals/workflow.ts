@@ -29,7 +29,7 @@ export class ApprovalError extends Error {
   }
 }
 
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "committing" | "committed" | "failed";
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "committing" | "committed" | "failed" | "unknown";
 
 export type ApprovalRequest = {
   id: string;
@@ -76,10 +76,15 @@ export function hashChange(binding: { tenantId: string; requesterUserId: string;
   return createHash("sha256").update(canonicalJson(binding)).digest("hex");
 }
 
+/** Minimal decision surface used by Slack approval buttons (in-memory or durable). */
+export interface ApprovalDecider {
+  decide(input: { requestId: string; approver: BoundIdentity; decision: "approve" | "reject"; presentedHash: string }): ApprovalRequest | Promise<ApprovalRequest>;
+}
+
 export type CommitExecutor = (req: Readonly<ApprovalRequest>) => Promise<unknown>;
 export type RequesterAuthz = { roles: readonly Role[]; assignments?: AssignmentStore };
 
-export class ApprovalWorkflow {
+export class ApprovalWorkflow implements ApprovalDecider {
   private readonly requests = new Map<string, ApprovalRequest>();
   private readonly idem = new Map<string, unknown>();
   private readonly rotation = new Map<string, number>();

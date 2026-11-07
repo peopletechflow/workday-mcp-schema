@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added (production runtime)
+- `src/server/main.ts` HTTP runtime (`npm run serve`) with config validation, `/healthz`, `/readyz`, OAuth callback, request/header timeouts, graceful shutdown, Dockerfile.
+- Postgres storage (`src/store`): migrations, replay guard, form sessions, identity links, role entitlements, approval policies, approvals, commit ledger, encrypted tokens and PKCE states, admin audit.
+- Account linking via `/workday link` (admin invite, PKCE, single-use state). Audited admin CLI (`npm run admin`).
+- Commit ledger with uncertain-result handling and operator reconcile; no automatic resubmits.
+- Workday client rewritten to REST Directory paths (`/workers/me/requestTimeOff`, `/workers/me/timeOffDetails`), pinned version via `WORKDAY_ABSENCE_API_VERSION`, per-operation sandbox validation gate, timeouts, ambiguity classification.
+- `check:durable` (17 checks, PGlite or real Postgres), `npm run check`. Docs: RUNBOOK, SANDBOX-TESTING, AGENTS.md.
+
+### Changed
+- `loadConfig(env)` now reads booleans from the passed env (previously read process.env).
+- Slack handlers are async with pluggable replay, session, and identity stores. Unlinked `/workday` callers get a link hint.
+- In-memory single-process Slack server and its guard removed in favor of the durable runtime.
+
 ### Added (second pass)
 - Signed `/workday` slash command and `wd_time_off_shortcut` global shortcut open the Block Kit modal via `views.open` (injectable Slack API, 2.5 s ack budget). `submit` and `status` subcommands.
 - `ApprovalExecutionService`: approvals bind the exact Workday payload and a preview-token fingerprint; commit runs a fixed executor through the shared time-off core with the requester's token.

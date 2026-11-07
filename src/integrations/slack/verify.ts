@@ -14,7 +14,11 @@ export class SlackVerificationError extends Error {
 export const SLACK_MAX_SKEW_SECONDS = 300;
 
 /** Bounded in-memory replay cache. Use a shared store (Redis etc.) when running more than one instance. */
-export class ReplayCache {
+export interface ReplayGuard {
+  checkAndRemember(key: string, nowSec: number): boolean | Promise<boolean>;
+}
+
+export class ReplayCache implements ReplayGuard {
   private readonly seen = new Map<string, number>();
   constructor(private readonly max = 10_000) {}
   checkAndRemember(key: string, nowSec: number): boolean {
@@ -36,13 +40,13 @@ export function computeSlackSignature(secret: string, timestamp: string, rawBody
   return "v0=" + createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex");
 }
 
-export function verifySlackRequest(args: {
+export async function verifySlackRequest(args: {
   rawBody: string;
   headers: Record<string, string | undefined>;
   signingSecret: string | undefined;
-  replay: ReplayCache;
+  replay: ReplayGuard;
   nowSec?: number;
-}): void {
+}): Promise<void> {
   const { rawBody, headers, signingSecret, replay } = args;
   if (!signingSecret) throw new SlackVerificationError("signing secret not configured");
   const ts = headers["x-slack-request-timestamp"];
@@ -56,5 +60,5 @@ export function verifySlackRequest(args: {
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
     throw new SlackVerificationError("bad signature");
   }
-  if (!replay.checkAndRemember(`${ts}:${sig}`, now)) throw new SlackVerificationError("replayed request");
+  if (!(await replay.checkAndRemember(`${ts}:${sig}`, now))) throw new SlackVerificationError("replayed request");
 }

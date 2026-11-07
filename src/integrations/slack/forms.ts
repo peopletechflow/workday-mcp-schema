@@ -8,17 +8,23 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { SlackConfig } from "../config.js";
-import type { BoundIdentity, IdentityDirectory } from "../identity.js";
+import type { BoundIdentity, IdentityResolver } from "../identity.js";
 import { ApprovalError, type ApprovalRequest } from "../approvals/workflow.js";
 import type { ApprovalExecutionService } from "../approvals/execution.js";
 import { RbacDeniedError } from "../../rbac/enforce.js";
-import { ReplayCache, SlackVerificationError, verifySlackRequest } from "./verify.js";
+import { type ReplayGuard, SlackVerificationError, verifySlackRequest } from "./verify.js";
 
 export const TIME_OFF_CALLBACK_ID = "wd_time_off_request";
 
-type FormSession = { slackTeamId: string; slackUserId: string; identity: BoundIdentity; kind: string; expiresAt: number };
+export type FormSession = { slackTeamId: string; slackUserId: string; identity: BoundIdentity; kind: string; expiresAt: number };
 
-export class FormSessionStore {
+export interface FormSessions {
+  open(s: Omit<FormSession, "expiresAt">, ttlMs: number): string | Promise<string>;
+  peek(nonce: string): FormSession | undefined | Promise<FormSession | undefined>;
+  consume(nonce: string): boolean | Promise<boolean>;
+}
+
+export class FormSessionStore implements FormSessions {
   private readonly map = new Map<string, FormSession>();
   constructor(private readonly now: () => number = Date.now) {}
   open(s: Omit<FormSession, "expiresAt">, ttlMs: number): string {
@@ -101,9 +107,9 @@ export type FormOutcome =
 
 export type FormDeps = {
   config: SlackConfig;
-  identities: IdentityDirectory;
-  replay: ReplayCache;
-  sessions: FormSessionStore;
+  identities: IdentityResolver;
+  replay: ReplayGuard;
+  sessions: FormSessions;
   service: ApprovalExecutionService;
   nowSec?: number;
 };
@@ -114,7 +120,7 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
   if (!deps.config.enabled) return deny(403, "slack_disabled");
   if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return deny(400, "body_too_large");
   try {
-    verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
   } catch (e) {
     return deny(401, e instanceof SlackVerificationError ? e.reason : "verify_failed");
   }
@@ -126,12 +132,12 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
   }
   if (!deps.config.allowedTeamIds.includes(p.team.id)) return deny(403, "team_not_allowed");
   if (p.view.callback_id !== TIME_OFF_CALLBACK_ID) return deny(400, "unknown_form");
-  const session = deps.sessions.peek(p.view.private_metadata);
+  const session = await deps.sessions.peek(p.view.private_metadata);
   if (!session) return deny(403, "form_expired_or_unknown");
   if (session.slackTeamId !== p.team.id || session.slackUserId !== p.user.id || session.kind !== TIME_OFF_CALLBACK_ID) {
     return deny(403, "form_owner_mismatch");
   }
-  const identity = deps.identities.resolveSlack(p.team.id, p.user.id);
+  const identity = await deps.identities.resolveSlack(p.team.id, p.user.id);
   if (!identity || identity.tenantId !== session.identity.tenantId || identity.userId !== session.identity.userId) {
     return deny(403, "identity_changed");
   }
@@ -150,7 +156,7 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
     return { status: 200, body: { response_action: "errors", errors } };
   }
   const f = parsed.data;
-  if (!deps.sessions.consume(p.view.private_metadata)) return deny(403, "form_already_used");
+  if (!(await deps.sessions.consume(p.view.private_metadata))) return deny(403, "form_already_used");
   let approval: ApprovalRequest;
   try {
     approval = await deps.service.proposeTimeOff(identity, f, "slack_form");
@@ -167,11 +173,11 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
  * Start a form for a verified Slack caller (for example from a signed slash command or
  * shortcut). Returns the view to pass to Slack views.open with the interaction trigger_id.
  */
-export function startTimeOffForm(deps: { config: SlackConfig; identities: IdentityDirectory; sessions: FormSessionStore }, slackTeamId: string, slackUserId: string): Record<string, unknown> {
+export async function startTimeOffForm(deps: { config: SlackConfig; identities: IdentityResolver; sessions: FormSessions }, slackTeamId: string, slackUserId: string): Promise<Record<string, unknown>> {
   if (!deps.config.enabled) throw new Error("Slack disabled");
   if (!deps.config.allowedTeamIds.includes(slackTeamId)) throw new Error("team_not_allowed");
-  const identity = deps.identities.resolveSlack(slackTeamId, slackUserId);
+  const identity = await deps.identities.resolveSlack(slackTeamId, slackUserId);
   if (!identity) throw new Error("unlinked_user");
-  const nonce = deps.sessions.open({ slackTeamId, slackUserId, identity, kind: TIME_OFF_CALLBACK_ID }, deps.config.formTtlMs);
+  const nonce = await deps.sessions.open({ slackTeamId, slackUserId, identity, kind: TIME_OFF_CALLBACK_ID }, deps.config.formTtlMs);
   return buildTimeOffModal(nonce);
 }

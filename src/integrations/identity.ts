@@ -17,7 +17,12 @@ const LinkSchema = z.object({
 });
 export type IdentityLink = z.infer<typeof LinkSchema>;
 
-export class IdentityDirectory {
+export interface IdentityResolver {
+  /** Undefined means unknown or revoked caller: deny. */
+  resolveSlack(teamId: string, userId: string): BoundIdentity | undefined | Promise<BoundIdentity | undefined>;
+}
+
+export class IdentityDirectory implements IdentityResolver {
   private readonly links = new Map<string, BoundIdentity>();
   constructor(links: readonly IdentityLink[] = []) {
     for (const l of links) this.link(l);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, workdayClientOptions } from "./config.js";
 import { TokenStore } from "./auth/token-store.js";
 import type { PkcePair } from "./auth/oauth.js";
 import { AuditLogger } from "./safety/audit.js";
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   const pendingPkce = new Map<string, PkcePair>();
   const client = config.useFixtures
     ? new FixtureWorkdayClient()
-    : new HttpWorkdayClient(config);
+    : new HttpWorkdayClient(config, workdayClientOptions(config));
   const domain = config.useFixtures
     ? new FixtureWorkdayDomainClient()
     : new HttpWorkdayDomainClient(config);

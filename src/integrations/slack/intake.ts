@@ -6,8 +6,8 @@
  */
 import { z } from "zod";
 import type { SlackConfig } from "../config.js";
-import type { BoundIdentity, IdentityDirectory } from "../identity.js";
-import { ReplayCache, SlackVerificationError, verifySlackRequest } from "./verify.js";
+import type { BoundIdentity, IdentityResolver } from "../identity.js";
+import { type ReplayGuard, SlackVerificationError, verifySlackRequest } from "./verify.js";
 import { defaultLog, fingerprint, type IntakeLog } from "./redact.js";
 
 export type IntakeRecord = {
@@ -58,14 +58,14 @@ export class InMemoryIntakeSink implements IntakeSink {
 
 export type SlackIntakeDeps = {
   config: SlackConfig;
-  identities: IdentityDirectory;
-  replay: ReplayCache;
+  identities: IdentityResolver;
+  replay: ReplayGuard;
   sink: IntakeSink;
   log?: IntakeLog;
   nowSec?: number;
 };
 
-export function handleSlackEvent(rawBody: string, headers: Record<string, string | undefined>, deps: SlackIntakeDeps): IntakeOutcome {
+export async function handleSlackEvent(rawBody: string, headers: Record<string, string | undefined>, deps: SlackIntakeDeps): Promise<IntakeOutcome> {
   const log = deps.log ?? defaultLog;
   const { config } = deps;
   const reject = (status: 401 | 403 | 413 | 400, reason: string): IntakeOutcome => {
@@ -75,7 +75,7 @@ export function handleSlackEvent(rawBody: string, headers: Record<string, string
   if (!config.enabled) return reject(403, "slack_disabled");
   if (Buffer.byteLength(rawBody, "utf8") > config.maxBodyBytes) return reject(413, "body_too_large");
   try {
-    verifySlackRequest({ rawBody, headers, signingSecret: config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({ rawBody, headers, signingSecret: config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
   } catch (err) {
     return reject(401, err instanceof SlackVerificationError ? err.reason : "verify_failed");
   }
@@ -101,7 +101,7 @@ export function handleSlackEvent(rawBody: string, headers: Record<string, string
   if (ev.bot_id || ev.subtype) return ignore("bot_or_subtype");
   if (!ev.user || (config.botUserId && ev.user === config.botUserId)) return ignore("self_or_no_user");
   if (!ev.channel || !config.allowedChannelIds.includes(ev.channel)) return reject(403, "channel_not_allowed");
-  const identity = deps.identities.resolveSlack(teamId, ev.user);
+  const identity = await deps.identities.resolveSlack(teamId, ev.user);
   if (!identity) return reject(403, "unlinked_user");
   const text = (ev.text ?? "").slice(0, config.maxIntakeTextChars);
   const record: IntakeRecord = {

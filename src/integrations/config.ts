@@ -67,7 +67,6 @@ export function loadIntegrationConfig(env: NodeJS.ProcessEnv = process.env): Int
     if (!slack.signingSecret) missing.push("SLACK_SIGNING_SECRET");
     if (!slack.allowedTeamIds.length) missing.push("SLACK_ALLOWED_TEAM_IDS");
     if (!slack.allowedChannelIds.length) missing.push("SLACK_ALLOWED_CHANNEL_IDS");
-    if (!slack.identityMapPath) missing.push("SLACK_IDENTITY_MAP_PATH");
     if (missing.length) throw new Error(`SLACK_ENABLED=true but missing: ${missing.join(", ")} (fail closed).`);
   }
   const notion: NotionConfig = {

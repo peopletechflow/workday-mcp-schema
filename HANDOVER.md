@@ -1,21 +1,18 @@
 # Handover
 
-## Current state
-- Layer-3 MCP server with RBAC (roles plus per-user grants/denies), Agent-Ready catalog, AI SDK agent.
-- Slack (intake, `/workday` command, shortcut, modal, approval buttons), Notion reads, and the approval execution path for self-service time off. All fixture-tested offline; nothing run live. Disabled by default. See docs/INTEGRATIONS.md.
+## State
+- stdio MCP server (developer surface) and production HTTP integration runtime (`npm run serve`).
+- Runtime: Postgres state, account linking, entitlements, encrypted tokens, approvals with commit ledger, Slack intake/command/forms/buttons, Notion reads for agents. Offline verified only.
 
-## Done and tested offline
-- Signed, allowlisted slash command and shortcut open the modal via `views.open` (injectable client).
-- Approved requests commit through the same preview/commit core as the MCP tools, with the requester's token, idempotency, and permission recheck.
-- Notion fetcher matches the documented pages and block children contract.
+## Verified offline
+`npm run check` (typecheck, check:rbac, check:integrations 36, check:durable 17 on PGlite). `CHECK_DATABASE_URL=... npm run check:durable` also passes on PostgreSQL 17 (embedded, local). Built server booted against Postgres: migrate, admin commands, `/healthz` 200, `/readyz` 200, unsigned Slack 401.
 
-## Not done / unconfigured
-1. No Slack app exists. Create one in a sandbox workspace: Events to `/slack/events`, slash command `/workday` to `/slack/commands`, Interactivity (and global shortcut `wd_time_off_shortcut`) to `/slack/interactions`. Scopes: `commands`, `chat:write` only if you enable approval delivery, channel history scopes for intake.
-2. Something must call `createSlackServer({ core, authzFor })` and listen; there is no CLI entry yet. `authzFor` must derive roles from Workday security groups in production.
-3. Identity map is a JSON file; real account linking is out of scope.
-4. Workday HTTP time-off paths are unverified (see INTEGRATIONS.md, adapter status).
-5. In-memory single process: restart loses approvals; no multi-instance.
-6. Notion: choose mode, write the resource policy, share only those pages.
+## Not done (needs access, not code)
+1. Sandbox validation of Workday contracts (docs/SANDBOX-TESTING.md); until then `WORKDAY_VALIDATED_OPERATIONS` stays empty and live commits are refused.
+2. Workday API client registration, test users, time-off type ids.
+3. Slack app in a sandbox workspace; Notion policy and page sharing.
+4. Hosting, managed Postgres, secrets manager, TLS, monitoring of `/readyz` and `approvals-list --status reconcile`.
 
-## Checks
-`npm run typecheck`, `npm run check:rbac`, `npm run check:integrations` (41).
+## Known design limits
+- Linking does not verify which Workday worker signed in (no validated "who am I" contract); calls use `me`.
+- Only self-service time off is wired through approvals.

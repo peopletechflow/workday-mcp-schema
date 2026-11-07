@@ -14,6 +14,11 @@ const ConfigSchema = z.object({
   allowProd: z.boolean().default(false),
   useFixtures: z.boolean().default(true),
   disabledTools: z.array(z.string()).default([]),
+  /** Required for live mode; copy the version from your tenant's REST directory. */
+  absenceApiVersion: z.string().regex(/^v\d+(\.\d+)?$/).optional(),
+  /** Workday operations validated in sandbox for this deployment (others fail closed). */
+  validatedOperations: z.array(z.enum(["requestTimeOff.create", "timeOffDetails.list", "balances.list"])).default([]),
+  workdayHttpTimeoutMs: z.number().int().min(1000).max(60000).default(15000),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
@@ -39,8 +44,8 @@ function looksLikeProduction(baseUrl: string, tenant: string): boolean {
   return PROD_HOST_HINTS.some((hint) => host === hint || host.endsWith(`.${hint}`));
 }
 
-function envBool(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
+function envBool(name: string, fallback: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
 }
@@ -70,9 +75,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     oauthScopes: env.WORKDAY_OAUTH_SCOPES ?? "openid",
     tokenStorePath: env.WORKDAY_TOKEN_STORE_PATH ?? ".data/tokens.json",
     auditLogPath: env.WORKDAY_AUDIT_LOG_PATH ?? ".data/audit.jsonl",
-    allowProd: envBool("WORKDAY_ALLOW_PROD", false),
-    useFixtures: envBool("WORKDAY_USE_FIXTURES", true),
+    allowProd: envBool("WORKDAY_ALLOW_PROD", false, env),
+    useFixtures: envBool("WORKDAY_USE_FIXTURES", true, env),
     disabledTools: disabled,
+    absenceApiVersion: env.WORKDAY_ABSENCE_API_VERSION || undefined,
+    validatedOperations: (env.WORKDAY_VALIDATED_OPERATIONS ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+    workdayHttpTimeoutMs: env.WORKDAY_HTTP_TIMEOUT_MS ? Number(env.WORKDAY_HTTP_TIMEOUT_MS) : 15000,
   });
 
   if (!parsed.success) {
@@ -88,7 +96,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
+  if (!config.useFixtures) {
+    if (!config.absenceApiVersion) throw new Error("WORKDAY_ABSENCE_API_VERSION is required when WORKDAY_USE_FIXTURES=false (no default version).");
+    for (const k of ["oauthClientId", "oauthClientSecret"] as const) {
+      if (config[k] === "replace_me") throw new Error(`Live mode requires ${k} to be configured.`);
+    }
+  }
   return config;
+}
+
+export function workdayClientOptions(config: AppConfig) {
+  return {
+    apiVersion: config.absenceApiVersion ?? "v0",
+    validatedOperations: config.validatedOperations,
+    timeoutMs: config.workdayHttpTimeoutMs,
+  };
 }
 
 export function assertToolEnabled(config: AppConfig, toolName: string): void {

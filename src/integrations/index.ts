@@ -8,6 +8,7 @@ export * from "./slack/notify.js";
 export * from "./notion/access.js";
 export * from "./approvals/workflow.js";
 export * from "./http.js";
+export * from "./link.js";
 export * from "./slack/api.js";
 export * from "./slack/commands.js";
 export * from "./approvals/execution.js";
