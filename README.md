@@ -137,7 +137,7 @@ npm run dev
 
 ## Slack and Notion integrations
 
-Optional, disabled by default. Slack conversation intake (signed, allowlisted, no auto replies), a Block Kit time-off form, Slack approve/reject buttons, Notion knowledge reads for agents limited by a server policy, and a human approval workflow for writes. The agent gets read tools from the caller's permissions and can only propose writes; it cannot commit or approve. Details, security model, and what is fixture-tested vs not live-verified: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+Optional, disabled by default. Slack conversation intake (signed, allowlisted, no auto replies), a `/workday` slash command and shortcut that open a Block Kit time-off form, Slack approve/reject buttons, `/workday submit` to commit an approved request through the existing guarded time-off commit, Notion knowledge reads for agents limited by a server policy, and a human approval workflow for writes. The agent gets read tools from the caller's permissions and can only propose writes; it cannot commit or approve. Details, security model, and what is fixture-tested vs not live-verified: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 ```bash
 npm run check:integrations   # offline fixture checks

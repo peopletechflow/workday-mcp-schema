@@ -83,6 +83,6 @@ export function loadIntegrationConfig(env: NodeJS.ProcessEnv = process.env): Int
   return {
     slack,
     notion,
-    approvals: { policyPath: env.APPROVAL_POLICY_PATH || undefined, ttlMs: 30 * 60 * 1000 },
+    approvals: { policyPath: env.APPROVAL_POLICY_PATH || undefined, ttlMs: 15 * 60 * 1000 },
   };
 }

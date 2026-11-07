@@ -12,9 +12,9 @@ import type { PreviewStore } from "../safety/preview-store.js";
 import type { TokenStore } from "../auth/token-store.js";
 import type { PkcePair } from "../auth/oauth.js";
 import { SignInRequiredError } from "../auth/oauth.js";
-import { ensureFixtureSession, requireUserAccessToken } from "../session.js";
 import { z } from "zod";
 import { previewRequestTimeOff } from "../schemas/tools/self-service.js";
+import { createTimeOffPreview } from "./time-off-core.js";
 
 // Input contract lives in src/schemas/tools (schema-first).
 const InputSchema = previewRequestTimeOff.input;
@@ -55,30 +55,7 @@ export function registerPreviewRequestTimeOff(
       try {
         assertToolEnabled(deps.config, toolName);
         assertToolAllowed(deps.resolveUserRoles(), toolName);
-        if (args.endDate < args.startDate) {
-          throw new Error("endDate must be on or after startDate");
-        }
-        await ensureFixtureSession(deps.config, deps.tokenStore, userId);
-        // Ensure the user is signed in before we mint a preview (no anonymous previews).
-        await requireUserAccessToken(deps.config, deps.tokenStore, userId, deps.pendingPkce);
-
-        const summary =
-          `Request ${args.quantity} ${args.unit.toLowerCase()} of ` +
-          `${args.timeOffType.type}:${args.timeOffType.value} ` +
-          `from ${args.startDate} to ${args.endDate}` +
-          (args.comment ? ` (comment: ${args.comment.slice(0, 80)})` : "");
-
-        const previewToken = deps.previewStore.create({
-          kind: "request_time_off",
-          userId,
-          startDate: args.startDate,
-          endDate: args.endDate,
-          unit: args.unit,
-          quantity: args.quantity,
-          timeOffType: args.timeOffType,
-          comment: args.comment,
-          summary,
-        });
+        const { previewToken, summary } = await createTimeOffPreview(deps, userId, args);
 
         const body = {
           previewToken,

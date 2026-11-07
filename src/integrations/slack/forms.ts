@@ -9,7 +9,9 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { SlackConfig } from "../config.js";
 import type { BoundIdentity, IdentityDirectory } from "../identity.js";
-import type { ApprovalRequest, ApprovalWorkflow, RequesterAuthz } from "../approvals/workflow.js";
+import { ApprovalError, type ApprovalRequest } from "../approvals/workflow.js";
+import type { ApprovalExecutionService } from "../approvals/execution.js";
+import { RbacDeniedError } from "../../rbac/enforce.js";
 import { ReplayCache, SlackVerificationError, verifySlackRequest } from "./verify.js";
 
 export const TIME_OFF_CALLBACK_ID = "wd_time_off_request";
@@ -102,13 +104,12 @@ export type FormDeps = {
   identities: IdentityDirectory;
   replay: ReplayCache;
   sessions: FormSessionStore;
-  workflow: ApprovalWorkflow;
-  authzFor: (identity: BoundIdentity) => RequesterAuthz;
+  service: ApprovalExecutionService;
   nowSec?: number;
 };
 
 /** Slack sends interactivity as application/x-www-form-urlencoded with a `payload` field. */
-export function handleViewSubmission(rawBody: string, headers: Record<string, string | undefined>, deps: FormDeps): FormOutcome {
+export async function handleViewSubmission(rawBody: string, headers: Record<string, string | undefined>, deps: FormDeps): Promise<FormOutcome> {
   const deny = (status: 400 | 401 | 403, reason: string): FormOutcome => ({ status, body: "", reason });
   if (!deps.config.enabled) return deny(403, "slack_disabled");
   if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return deny(400, "body_too_large");
@@ -150,15 +151,15 @@ export function handleViewSubmission(rawBody: string, headers: Record<string, st
   }
   const f = parsed.data;
   if (!deps.sessions.consume(p.view.private_metadata)) return deny(403, "form_already_used");
-  const approval = deps.workflow.propose({
-    requester: identity,
-    authz: deps.authzFor(identity),
-    commitTool: "commit_request_time_off",
-    resource: `worker:${identity.userId}`,
-    change: { kind: "request_time_off", ...f, unit: "DAYS" },
-    summary: `Time off ${f.timeOffType} ${f.startDate} to ${f.endDate} (${f.quantity} days)`,
-    source: "slack_form",
-  });
+  let approval: ApprovalRequest;
+  try {
+    approval = await deps.service.proposeTimeOff(identity, f, "slack_form");
+  } catch (e) {
+    if (e instanceof RbacDeniedError || e instanceof ApprovalError) {
+      return { status: 200, body: { response_action: "errors", errors: { start: "You are not allowed to submit this request, or no approver is configured." } } };
+    }
+    throw e;
+  }
   return { status: 200, body: { response_action: "clear" }, approval };
 }
 

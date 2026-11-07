@@ -65,6 +65,13 @@ export class PreviewStore {
     return token;
   }
 
+  /** Read a preview without consuming it (same ownership/kind/expiry rules). */
+  peek(token: string, userId: string, kind: PreviewPayload["kind"]): Readonly<PreviewPayload> | undefined {
+    const payload = this.map.get(token);
+    if (!payload || payload.expiresAt < Date.now() || payload.userId !== userId || payload.kind !== kind) return undefined;
+    return { ...payload, timeOffType: { ...payload.timeOffType } };
+  }
+
   consume(token: string, userId: string, kind: PreviewPayload["kind"]): PreviewPayload {
     const payload = this.map.get(token);
     if (!payload) {

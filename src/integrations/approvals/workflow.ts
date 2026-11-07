@@ -85,7 +85,7 @@ export class ApprovalWorkflow {
   private readonly rotation = new Map<string, number>();
   private readonly rules: ApprovalPolicyRule[];
 
-  constructor(rules: readonly ApprovalPolicyRule[], private readonly ttlMs = 30 * 60 * 1000, private readonly now: () => number = Date.now) {
+  constructor(rules: readonly ApprovalPolicyRule[], readonly ttlMs = 15 * 60 * 1000, private readonly now: () => number = Date.now) {
     this.rules = rules.map((r) => PolicyRuleSchema.parse(r));
     for (const r of this.rules) {
       const entry = TOOL_REGISTRY.find((t) => t.name === r.commitTool);
@@ -153,6 +153,11 @@ export class ApprovalWorkflow {
   get(id: string): Readonly<ApprovalRequest> | undefined {
     const r = this.requests.get(id);
     return r ? structuredClone(r) : undefined;
+  }
+
+  /** Copies of requests for one tenant (admin/status views and tests). */
+  list(tenantId: string): ApprovalRequest[] {
+    return [...this.requests.values()].filter((r) => r.tenantId === tenantId).map((r) => structuredClone(r));
   }
 
   private load(id: string): ApprovalRequest {

@@ -16,7 +16,7 @@ import type { AssignmentStore } from "../rbac/assignments.js";
 import { assertToolAllowedForUser } from "../rbac/user-enforce.js";
 import { TOOL_REGISTRY } from "../tools/registry.js";
 import type { BoundIdentity } from "../integrations/identity.js";
-import type { ApprovalWorkflow } from "../integrations/approvals/workflow.js";
+import type { ApprovalExecutionService } from "../integrations/approvals/execution.js";
 import type { NotionReader, NotionResourcePolicy } from "../integrations/notion/access.js";
 import { TimeOffFormSchema } from "../integrations/slack/forms.js";
 import { createEnterpriseModel, loadEnterpriseAiConfig, AiDisabledError } from "./client.js";
@@ -44,7 +44,8 @@ export type IntegrationAgentContext = {
   roles: readonly Role[];
   assignments?: AssignmentStore;
   invokeTool: Layer3ToolInvoker;
-  workflow?: ApprovalWorkflow;
+  /** Approval execution service; the agent can only propose through it. */
+  approvals?: ApprovalExecutionService;
   notion?: { reader: NotionReader; policy: NotionResourcePolicy };
 };
 
@@ -91,22 +92,14 @@ export function buildIntegrationToolset(ctx: IntegrationAgentContext): Record<st
     }
   }
 
-  if (ctx.workflow && allowed(ctx, "commit_request_time_off")) {
-    const workflow = ctx.workflow;
+  if (ctx.approvals && allowed(ctx, "commit_request_time_off") && allowed(ctx, "preview_request_time_off")) {
+    const approvals = ctx.approvals;
     tools.propose_time_off_request = tool({
       description: "Create a time-off change preview that a human approver must approve. Does not submit anything to Workday.",
       inputSchema: TimeOffFormSchema.innerType().strict(),
       execute: async (input: z.infer<typeof TimeOffFormSchema>) => {
         const f = TimeOffFormSchema.parse(input);
-        const r = workflow.propose({
-          requester: ctx.identity,
-          authz: { roles: ctx.roles, assignments: ctx.assignments },
-          commitTool: "commit_request_time_off",
-          resource: `worker:${ctx.identity.userId}`,
-          change: { kind: "request_time_off", ...f, unit: "DAYS" },
-          summary: `Time off ${f.timeOffType} ${f.startDate} to ${f.endDate} (${f.quantity} days)`,
-          source: "agent",
-        });
+        const r = await approvals.proposeTimeOff(ctx.identity, f, "agent");
         return { approvalRequestId: r.id, status: "pending_human_approval", summary: r.summary, expiresAt: new Date(r.expiresAt).toISOString() };
       },
     });

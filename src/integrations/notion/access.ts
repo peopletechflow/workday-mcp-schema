@@ -80,22 +80,59 @@ export interface DelegatedNotionTokens {
 
 export type NotionFetcher = (token: string, resourceId: string) => Promise<string>;
 
-/** Live fetcher: page block children as plain text. Not exercised in offline checks. */
-export const notionHttpFetcher: NotionFetcher = async (token, resourceId) => {
-  const res = await fetch(`https://api.notion.com/v1/blocks/${resourceId}/children?page_size=100`, {
-    headers: { authorization: `Bearer ${token}`, "Notion-Version": "2022-06-28" },
-  });
-  if (!res.ok) throw new NotionAccessDeniedError(`notion_http_${res.status}`);
-  const body = (await res.json()) as { results?: Array<Record<string, unknown>> };
-  const lines: string[] = [];
-  for (const block of body.results ?? []) {
-    const type = block.type as string | undefined;
-    const content = type ? (block[type] as { rich_text?: Array<{ plain_text?: string }> } | undefined) : undefined;
-    const text = content?.rich_text?.map((t) => t.plain_text ?? "").join("") ?? "";
-    if (text) lines.push(text);
-  }
-  return lines.join("\n");
-};
+/**
+ * Notion REST contract used here (pinned):
+ * - Header `Notion-Version: 2022-06-28` (stable version for pages and block children; this code
+ *   does not use databases or data sources, which changed in later versions).
+ * - GET /v1/pages/{id}: must return object "page" and not be archived / in trash.
+ * - GET /v1/blocks/{id}/children?page_size=100[&start_cursor=...]: paginated with
+ *   `has_more` / `next_cursor`. Text lives at block[block.type].rich_text[].plain_text.
+ * Only content inside the allowlisted page is read. Nested blocks (toggles, lists, columns) are
+ * followed up to a depth limit, but child_page, child_database, link_to_page, and synced_block
+ * copies that point elsewhere are NOT followed, because they are separate resources that
+ * need their own allowlist entry.
+ */
+export const NOTION_API_VERSION = "2022-06-28";
+const NON_TRAVERSABLE = new Set(["child_page", "child_database", "link_to_page", "link_preview", "embed", "bookmark"]);
+
+type NotionBlock = { id: string; type: string; has_children?: boolean; [k: string]: unknown };
+
+export function createNotionHttpFetcher(fetchImpl: typeof fetch = fetch, limits = { maxDepth: 3, maxRequests: 25 }): NotionFetcher {
+  return async (token, resourceId) => {
+    const headers = { authorization: `Bearer ${token}`, "Notion-Version": NOTION_API_VERSION };
+    let requests = 0;
+    const get = async (path: string): Promise<Record<string, unknown>> => {
+      if (++requests > limits.maxRequests) throw new NotionAccessDeniedError("notion_request_budget_exceeded");
+      const res = await fetchImpl(`https://api.notion.com/v1/${path}`, { headers });
+      if (!res.ok) throw new NotionAccessDeniedError(`notion_http_${res.status}`);
+      return (await res.json()) as Record<string, unknown>;
+    };
+    const page = await get(`pages/${resourceId}`);
+    if (page.object !== "page" || normalizeNotionId(String(page.id ?? "")) !== resourceId) throw new NotionAccessDeniedError("not_the_allowlisted_page");
+    if (page.archived === true || page.in_trash === true) throw new NotionAccessDeniedError("page_archived");
+    const lines: string[] = [];
+    const walk = async (blockId: string, depth: number): Promise<void> => {
+      let cursor: string | undefined;
+      do {
+        const body = await get(`blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ""}`);
+        for (const block of (body.results as NotionBlock[] | undefined) ?? []) {
+          if (NON_TRAVERSABLE.has(block.type)) continue;
+          const content = block[block.type] as { rich_text?: Array<{ plain_text?: string }>; synced_from?: unknown } | undefined;
+          if (block.type === "synced_block" && content?.synced_from) continue;
+          const text = content?.rich_text?.map((t) => t.plain_text ?? "").join("") ?? "";
+          if (text) lines.push(`${"  ".repeat(depth)}${text}`);
+          if (block.has_children && depth + 1 < limits.maxDepth) await walk(block.id, depth + 1);
+        }
+        cursor = body.has_more === true && typeof body.next_cursor === "string" ? body.next_cursor : undefined;
+      } while (cursor);
+    };
+    await walk(resourceId, 0);
+    return lines.join("\n");
+  };
+}
+
+/** Live fetcher with the global fetch. Not exercised against the real API in offline checks. */
+export const notionHttpFetcher: NotionFetcher = createNotionHttpFetcher();
 
 export class NotionReader {
   constructor(
