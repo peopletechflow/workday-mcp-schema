@@ -2,7 +2,7 @@
 
 `workday-mcp-schema` is a reusable baseline for custom Workday MCP servers aimed at scale-ups. Adjust it to your processes, org structure, and complexity. It is the **third** layer of the stack. Use it only after the first two layers have been ruled out.
 
-See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [README](../README.md)
+See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [INTEGRATIONS.md](./INTEGRATIONS.md) · [README](../README.md)
 
 ## The three layers
 

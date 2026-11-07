@@ -135,6 +135,14 @@ npm run dev
 2. `preview_request_time_off` with dates / type / quantity → show `summary` to the user.
 3. On explicit confirmation: `commit_request_time_off` with `previewToken`, a new `idempotencyKey`, and `userConfirmed: true`.
 
+## Slack and Notion integrations
+
+Optional, disabled by default. Slack conversation intake (signed, allowlisted, no auto replies), a Block Kit time-off form, Slack approve/reject buttons, Notion knowledge reads for agents limited by a server policy, and a human approval workflow for writes. The agent gets read tools from the caller's permissions and can only propose writes; it cannot commit or approve. Details, security model, and what is fixture-tested vs not live-verified: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
+```bash
+npm run check:integrations   # offline fixture checks
+```
+
 ## Compliance notes
 
 - Audit log (default `.data/audit.jsonl`): who, tool, redacted inputs, Workday event ID, result, latency.

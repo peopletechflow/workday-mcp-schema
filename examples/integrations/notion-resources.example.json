@@ -1,0 +1,3 @@
+[
+  { "tenantId": "sandbox_tenant", "resourceId": "00000000000000000000000000000000", "label": "HR handbook", "allowedRoles": ["worker_self"], "allowedUserIds": [], "deniedUserIds": [] }
+]

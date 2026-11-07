@@ -15,3 +15,4 @@ export {
   type Layer3ToolInvoker,
 } from "./enterprise-agent.js";
 export { summarizeToolResult, type SummarizeToolResultInput } from "./summarize.js";
+export * from "./integration-agent.js";

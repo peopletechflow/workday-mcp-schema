@@ -1,0 +1,4 @@
+[
+  { "slackTeamId": "T0EXAMPLE", "slackUserId": "U0ALICE", "tenantId": "sandbox_tenant", "userId": "alice" },
+  { "slackTeamId": "T0EXAMPLE", "slackUserId": "U0MANAGER", "tenantId": "sandbox_tenant", "userId": "manager1" }
+]
