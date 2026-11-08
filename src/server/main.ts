@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-/** Integration runtime entrypoint: `npm run serve` (after `npm run build`). */
+/** Integration runtime entrypoint: `pnpm run serve` (after `pnpm run build`). */
 import { createPgDb } from "../store/db.js";
 import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
-import { DbReplayGuard } from "../store/repos.js";
+import { pruneExpired } from "../store/repos.js";
 import { createHttpServer } from "../integrations/http.js";
 import { buildRuntime, loadRuntimeConfig } from "./runtime.js";
 
@@ -11,16 +11,19 @@ async function main(): Promise<void> {
   const db = createPgDb(cfg.databaseUrl);
   if (cfg.migrateOnStart) await migrate(db);
   const v = await schemaVersion(db).catch(() => 0);
-  if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: npm run db:migrate`);
+  if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: pnpm run db:migrate`);
   const rt = buildRuntime({ cfg, db });
   const server = createHttpServer(rt.route, { maxBodyBytes: cfg.integrations.slack.maxBodyBytes, log: rt.log });
-  const prune = setInterval(() => void new DbReplayGuard(db).prune().catch(() => {}), 60_000);
+  const prune = setInterval(() => void pruneExpired(db).catch(() => {}), 60_000);
   prune.unref();
   server.listen(cfg.port, () => rt.log({ evt: "listening", port: cfg.port, fixtures: cfg.app.useFixtures, slack: cfg.integrations.slack.enabled, validatedOps: cfg.app.validatedOperations.join(",") }));
   const stop = (sig: string) => {
     rt.log({ evt: "shutdown", sig });
-    server.close(() => void db.close().finally(() => process.exit(0)));
-    setTimeout(() => process.exit(1), 10_000).unref();
+    // Stop accepting requests, let post-ack Slack work finish (each task is time-bounded), then close the pool.
+    server.close(() => void rt.background.drain(8_000).then((left) => {
+      if (left) rt.log({ evt: "shutdown_background_abandoned", tasks: left });
+    }).finally(() => void db.close().finally(() => process.exit(0))));
+    setTimeout(() => process.exit(1), 25_000).unref();
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));

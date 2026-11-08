@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Fixed (PR #1 review)
+- Slack form submissions no longer wait for approver DMs before the ack. Notifications run after the ack in a bounded background runner (`src/integrations/background.ts`: 20 s per task, at most 200 in flight, failures logged) that the server drains on shutdown before closing the pool. If creating the approval itself outruns the 2.5 s budget, the ack updates the modal to "Submitting" and the outcome (receipt with request id, or the error text) is DMed to the requester afterwards.
+- The form nonce is now consumed in the same transaction that creates the approval (`propose({ claim })`). A failure rolls the claim back so the form stays usable, and a second submit of the same form cannot create a second approval (it gets "This form was already submitted").
+- `commitApproved` checks requester, tenant and permission with a read-only `lookupCommit` before any token work. A finished commit is returned from the ledger without refreshing or re-linking the Workday token; a non-requester is refused without a token fetch; a revoked role or another tenant cannot read a stored result (`beginCommit` now also checks permission before a replay). New executions fetch the token with no approval row lock held, then `beginCommit` re-checks and claims as before.
+
+### Changed (pnpm, agent context)
+- Package manager is pnpm: `packageManager` pinned in package.json (corepack), `pnpm-lock.yaml` committed, `package-lock.json` removed, Dockerfile installs with `corepack enable` and `pnpm install --frozen-lockfile`, docs and code comments use `pnpm run ...` and `pnpm admin ...`. `AGENTS.md` says never to add `package-lock.json`.
+- Agent context follows Anthropic's "Effective context engineering for AI agents" (docs/CONTEXT-ENGINEERING.md): both system prompts are sectioned (`<background>`, `<security_rules>` or `<rules>`, `<tool_guidance>`, `<output>`, `<examples>`) with three canonical examples instead of a rule list; tool descriptions and input schemas come from the schema-first contracts through `contractFor(name)` instead of internal `buildReason` text and untyped records; `wrapUntrusted` caps results at `MAX_TOOL_RESULT_CHARS` and tells the model to narrow the query; agent runs are bounded with `stepCountIs` (`MAX_AGENT_STEPS` 8, `MAX_ENTERPRISE_AGENT_STEPS` 10).
+- `AGENTS.md` rewritten as a short up-front map (invariants, check command, "where to look" table) that points at files for just-in-time reading.
+
+### Changed (Slack UI and ack performance)
+- Approval lifecycle runs inside Slack: a form submission DMs each assigned approver (Approve / Reject buttons, requester mention, decision deadline) and sends the requester a receipt; a decision replaces the approver's message and DMs the requester, with a "Submit to Workday" button when approved; Submit commits through `ApprovalExecutionService.commitApproved` with the requester's token and the ledger. `SLACK_APPROVAL_DELIVERY=explicit` gates the DMs; `SLACK_APPROVAL_CHANNEL_ID` is now a fallback only. `src/integrations/slack/notify.ts` (`SlackApprovalNotifier`), `interactions.ts`, new `submit.ts`.
+- Slow commits no longer sit inside the Slack ack: the ack says "Submitting" after the 2.5 s budget and the result replaces it through the interaction's `response_url` (command and button). `response_url` is accepted only on `https://hooks.slack.com/`.
+- No Workday token endpoint call inside a Slack ack: `ApprovalExecutionService` takes `linked` (stored link exists) for propose; the refresh happens at commit.
+- `SlackApi` gained `postMessage` and `respond`; every Slack call has an 8 s timeout. Reverse lookup `slackFor` on `DbIdentityLinks` and `IdentityDirectory` (notifications only).
+- Friendlier Slack error texts (`SELF_APPROVAL`, `NOT_APPROVER`, `NOT_REQUESTER`, `HASH_MISMATCH`, `NOT_FOUND`), `/workday help`.
+- Docs: `docs/MCP-AUTHORIZATION.md` maps the MCP authorization spec revision 2026-07-28 to both runtimes (stdio: credentials from the environment; HTTP runtime: not an MCP endpoint; client-side rules met; what an HTTP MCP transport would need). INTEGRATIONS.md "Slack UI flow", RUNBOOK "Slack delivery".
+- Checks: `check:integrations` 38 (delivery targets, response_url handling, Submit button), `check:durable` adds Slack UI lifecycle, slow-commit follow-up, foreign response_url, and no-refresh-in-ack.
+
+### Changed (hardening pass)
+- Per-user denies apply to the original time-off tools (`assertToolAllowedForUser`); MCP tool hints come from the registry (cancel/deny destructive, previews not idempotent).
+- Live mode requires `WORKDAY_TOKEN_ENCRYPTION_KEY` (32+ chars, no fallback); token file written atomically, owner-only. Production requires `LINK_ACCEPT_UNVERIFIED_SIGNER=true` (see RUNBOOK "Account linking identity"). Audit log redacts comment-like fields. Production host detection by pattern.
+- Token refresh distinguishes a refused grant (token deleted, re-link) from an outage or timeout (token kept, "temporarily unavailable"); 15 s token endpoint timeout; 30 s idle-in-transaction timeout.
+- A missing link at commit leaves the request `approved` for a retry after re-linking; sign-in and preview errors are not pinned to the idempotency key.
+- Approval windows: `APPROVAL_DECISION_TTL_MS` (72 h) and `APPROVAL_COMMIT_WINDOW_MS` (24 h), evaluated by the database clock. Form errors (day count, link, permissions) shown on the modal before the session is consumed.
+- Stdio server split into `src/mcp-server.ts` with a loopback OAuth callback (`src/auth/loopback-callback.ts`) for live mode; `check:mcp` drives the real tools over an in-memory transport. Pending sign-ins expire and are capped. `pruneExpired` covers replay keys, form sessions, and OAuth states.
+
 ### Added (production runtime)
 - `src/server/main.ts` HTTP runtime (`npm run serve`) with config validation, `/healthz`, `/readyz`, OAuth callback, request/header timeouts, graceful shutdown, Dockerfile.
 - Postgres storage (`src/store`): migrations, replay guard, form sessions, identity links, role entitlements, approval policies, approvals, commit ledger, encrypted tokens and PKCE states, admin audit.

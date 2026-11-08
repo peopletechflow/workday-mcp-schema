@@ -1,10 +1,10 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S pnpm exec tsx
 /**
  * Regenerate src/agent-ready/catalog.generated.ts from MCP Explorer CSV and/or ASOR JSON.
  *
  * Usage:
- *   npx tsx scripts/sync-agent-ready-catalog.ts --csv <file> [--asor <file>] [--dry-run]
- *   npx tsx scripts/sync-agent-ready-catalog.ts --asor <file> [--dry-run]
+ *   pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv <file> [--asor <file>] [--dry-run]
+ *   pnpm exec tsx scripts/sync-agent-ready-catalog.ts --asor <file> [--dry-run]
  *
  * Required CSV columns: name, type|kind, description
  * Recommended: wid, product line|productArea, operationType, requiredPromptTools
@@ -216,7 +216,7 @@ function emitTs(tools: AgentReadyToolDefinition[], sources: string[]): string {
   };
   return `/**
  * GENERATED FILE — do not hand-edit.
- * Regenerate: npx tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
+ * Regenerate: pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
  * See src/agent-ready/sync.md
  */
 import type { AgentReadyCatalog } from "./types.js";

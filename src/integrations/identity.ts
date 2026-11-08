@@ -22,8 +22,16 @@ export interface IdentityResolver {
   resolveSlack(teamId: string, userId: string): BoundIdentity | undefined | Promise<BoundIdentity | undefined>;
 }
 
-export class IdentityDirectory implements IdentityResolver {
+export type SlackAddress = { teamId: string; userId: string };
+
+/** Reverse lookup, used only to deliver notifications (never to authenticate anyone). */
+export interface SlackDirectory {
+  slackFor(identity: BoundIdentity): SlackAddress | undefined | Promise<SlackAddress | undefined>;
+}
+
+export class IdentityDirectory implements IdentityResolver, SlackDirectory {
   private readonly links = new Map<string, BoundIdentity>();
+  private readonly reverse = new Map<string, SlackAddress>();
   constructor(links: readonly IdentityLink[] = []) {
     for (const l of links) this.link(l);
   }
@@ -32,10 +40,14 @@ export class IdentityDirectory implements IdentityResolver {
     const key = `${l.slackTeamId}:${l.slackUserId}`;
     if (this.links.has(key)) throw new Error(`Duplicate Slack identity link ${key} (fail closed).`);
     this.links.set(key, { tenantId: l.tenantId, userId: l.userId });
+    this.reverse.set(`${l.tenantId}:${l.userId}`, { teamId: l.slackTeamId, userId: l.slackUserId });
   }
   /** Undefined means unknown caller: deny. */
   resolveSlack(teamId: string, userId: string): BoundIdentity | undefined {
     return this.links.get(`${teamId}:${userId}`);
+  }
+  slackFor(identity: BoundIdentity): SlackAddress | undefined {
+    return this.reverse.get(`${identity.tenantId}:${identity.userId}`);
   }
   static fromFile(path: string): IdentityDirectory {
     if (!existsSync(path)) throw new Error(`Identity map not found at configured path (fail closed).`);

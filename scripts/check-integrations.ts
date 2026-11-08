@@ -1,4 +1,4 @@
-/** Offline contract checks for Slack, Notion, approvals, and the integration agent toolset. Run: npm run check:integrations */
+/** Offline contract checks for Slack, Notion, approvals, and the integration agent toolset. Run: pnpm run check:integrations */
 import assert from "node:assert/strict";
 import {
   ApprovalError,
@@ -13,7 +13,7 @@ import {
   REJECT_ACTION,
   buildApprovalBlocks,
   computeSlackSignature,
-  deliverApprovalRequest,
+  SlackApprovalNotifier,
   handleApprovalAction,
   handleSlackEvent,
   handleViewSubmission,
@@ -27,7 +27,7 @@ import { buildIntegrationToolset, wrapUntrusted, INTEGRATION_SYSTEM_PROMPT } fro
 import { InMemoryAssignmentStore, RbacDeniedError, type Role } from "../src/rbac/index.js";
 import { createNotionHttpFetcher, NOTION_API_VERSION, handleSlashCommand, type SlackApi } from "../src/integrations/index.js";
 import { pgliteDb } from "./lib/test-db.js";
-import { instance, seed } from "./lib/harness.js";
+import { fakeSlack as fakeSlackApi, instance, seed, signed as signedNow, submitButton } from "./lib/harness.js";
 
 // Durable service on in-process Postgres (PGlite), seeded with links, roles, policy, tokens.
 const H = await (async () => {
@@ -289,13 +289,79 @@ await check("slack approval buttons: verified identity decides; spoofed/unlinked
   assert.equal((await handleApprovalAction(b4, signed(b4), d)).requestStatus, "approved");
   const b5 = body("U0MGR", REJECT_ACTION); assert.equal((await handleApprovalAction(b5, signed(b5), d)).reason, "NOT_PENDING");
 });
-await check("slack delivery: off by default, no network call", async () => {
-  let called = false;
-  const r = policy().propose({ requester: alice, authz: { roles: worker }, commitTool: "commit_request_time_off", resource: "worker:alice", change: timeOff, summary: "x", source: "api" });
-  const out = await deliverApprovalRequest(slack, r, (async () => { called = true; return new Response("{}"); }) as typeof fetch);
-  assert.equal(out.delivered, false); assert.equal(called, false);
-  const out2 = await deliverApprovalRequest({ ...slack, approvalDelivery: "explicit" }, r, (async () => { called = true; return new Response("{}"); }) as typeof fetch);
-  assert.equal(out2.reason, "delivery_not_configured"); assert.equal(called, false);
+await check("slack delivery: off by default (no Slack call); explicit DMs assigned approvers, never the requester; no comment text", async () => {
+  const r = policy().propose({ requester: alice, authz: { roles: worker }, commitTool: "commit_request_time_off", resource: "worker:alice", change: { ...timeOff, comment: "knee surgery" }, summary: "Time off sick 2026-12-01 to 2026-12-02 (2 days)", source: "api" });
+  const off = fakeSlackApi();
+  const n0 = new SlackApprovalNotifier({ config: slack, api: off.api, directory: ids, commandName: "/workday" });
+  assert.equal((await n0.proposed(r)).reason, "delivery_not_enabled"); assert.equal(off.posts.length, 0);
+  const n1 = new SlackApprovalNotifier({ config: { ...slack, approvalDelivery: "explicit" }, commandName: "/workday" });
+  assert.equal((await n1.proposed(r)).reason, "delivery_not_enabled", "no api client, nothing to call");
+  const on = fakeSlackApi();
+  const n2 = new SlackApprovalNotifier({ config: { ...slack, approvalDelivery: "explicit" }, api: on.api, directory: ids, commandName: "/workday" });
+  const d = await n2.proposed(r);
+  assert.equal(d.delivered, true);
+  // Approvers mgr and hr are in policy; hr has no Slack link in this directory, alice is the requester.
+  assert.deepEqual(on.posts.map((p) => p.channel).sort(), ["U0ALICE", "U0MGR"]);
+  const approverMsg = on.posts.find((p) => p.channel === "U0MGR")!;
+  const requesterMsg = on.posts.find((p) => p.channel === "U0ALICE")!;
+  assert.match(JSON.stringify(approverMsg.blocks), /wd_approval_approve/);
+  assert.ok(!JSON.stringify(requesterMsg.blocks).includes("wd_approval_approve"), "requester gets a receipt, not buttons");
+  assert.ok(!JSON.stringify(on.posts).includes("knee surgery") && !JSON.stringify(on.posts).includes(SECRET));
+  // Fallback: no approver link resolves -> approval channel.
+  const ch = fakeSlackApi();
+  const n3 = new SlackApprovalNotifier({ config: { ...slack, approvalDelivery: "explicit", approvalChannelId: "C0APPROVALS" }, api: ch.api, directory: new IdentityDirectory([]), commandName: "/workday" });
+  assert.equal((await n3.proposed(r)).recipients, 1);
+  assert.equal(ch.posts[0]!.channel, "C0APPROVALS");
+});
+await check("slack buttons with response_url: decision replaces the message and DMs the requester a Submit button; denied click gets an ephemeral note; foreign response_url ignored", async () => {
+  const w = policy();
+  const r = w.propose({ requester: alice, authz: { roles: worker }, commitTool: "commit_request_time_off", resource: "worker:alice", change: timeOff, summary: "x", source: "api" });
+  const s = fakeSlackApi();
+  const notifier = new SlackApprovalNotifier({ config: { ...slack, approvalDelivery: "explicit" }, api: s.api, directory: ids, commandName: "/workday" });
+  const d = { config: slack, identities: ids, replay: new ReplayCache(), workflow: w, notifier, nowSec: NOW, log: () => {} };
+  const body = (user: string, action: string, url: string) =>
+    `payload=${encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: "T0ALLOWED" }, user: { id: user }, response_url: url, actions: [{ action_id: action, value: `${r.id}|${r.changeHash}` }] }))}`;
+  const evil = body("U0MGR", APPROVE_ACTION, "https://attacker.example/collect");
+  const bad = body("U0MALLORY", APPROVE_ACTION, "https://hooks.slack.com/actions/T/1/a");
+  const good = body("U0MGR", APPROVE_ACTION, "https://hooks.slack.com/actions/T/2/b");
+  const o1 = await handleApprovalAction(bad, signed(bad), d);
+  assert.equal(o1.status, 403); assert.equal(o1.reason, "NOT_APPROVER");
+  assert.equal(s.responses.length, 1); assert.equal(s.responses[0]!.body.replace_original, false); assert.match(String(s.responses[0]!.body.text), /not an approver/);
+  const o2 = await handleApprovalAction(good, signed(good), d);
+  assert.equal(o2.requestStatus, "approved");
+  const replaced = s.responses[1]!;
+  assert.equal(replaced.body.replace_original, true); assert.ok(!JSON.stringify(replaced.body.blocks).includes("wd_approval_approve"), "buttons removed");
+  assert.match(JSON.stringify(replaced.body.blocks), /Approved\*? by <@U0MGR>/);
+  const dm = s.posts.find((p) => p.channel === "U0ALICE")!;
+  assert.match(JSON.stringify(dm.blocks), /wd_approval_submit/);
+  const submitBtn = (dm.blocks!.find((b) => b.type === "actions") as { elements: Array<{ action_id: string; value: string }> }).elements[0]!;
+  assert.equal(submitBtn.action_id, "wd_approval_submit"); assert.equal(submitBtn.value, r.id, "submit button value is the id only");
+  const o3 = await handleApprovalAction(evil, signed(evil), d); // already decided -> NOT_PENDING, but the point is the URL
+  assert.equal(o3.status, 403);
+  assert.ok(s.responses.every((x) => x.url.startsWith("https://hooks.slack.com/")), "non-Slack response_url never called");
+});
+await check("submit button: requester commits once via the durable service; another linked user is refused; result replaces the message", async () => {
+  const db = await pgliteDb();
+  await seed(db);
+  const s = fakeSlackApi();
+  const rt = instance(db, { slackApi: s.api, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const r = await rt.service.proposeTimeOff(alice, { startDate: "2026-12-01", endDate: "2026-12-02", timeOffType: "vacation", quantity: 2 }, "api");
+  await rt.backend.decide({ requestId: r.id, approver: mgr, decision: "approve", presentedHash: r.changeHash });
+  const press = (user: string) => submitButton(r.id, user);
+  const mal = press("U0MALLORY");
+  const o1 = await rt.route("POST", "/slack/interactions", mal, signedNow(mal));
+  assert.equal(o1.status, 200);
+  assert.equal((await rt.backend.get(r.id))!.status, "approved", "refused submit leaves the approval intact");
+  assert.match(String(s.responses.at(-1)!.body.text), /Only the person who requested/);
+  assert.equal(s.responses.at(-1)!.body.replace_original, false, "button kept");
+  const ok = press("U0ALICE");
+  assert.equal((await rt.route("POST", "/slack/interactions", ok, signedNow(ok))).status, 200);
+  assert.equal((await rt.backend.get(r.id))!.status, "committed");
+  assert.equal(s.responses.at(-1)!.body.replace_original, true);
+  assert.match(String(s.responses.at(-1)!.body.text), /Submitted to Workday \(SUBMITTED, event evt_fixture_1\)/);
+  const again = press("U0ALICE");
+  await rt.route("POST", "/slack/interactions", again, signedNow(again));
+  assert.match(String(s.responses.at(-1)!.body.text), /evt_fixture_1/, "double click replays the ledger result");
 });
 
 // ---- Notion ----
@@ -380,14 +446,24 @@ await check("agent: propose ignores model-supplied identity; creates pending req
 // ---- Slack commands, shortcut, end-to-end approval execution ----
 function fakeSlack(delayMs = 0, ok = true) {
   const calls: Array<{ triggerId: string; view: Record<string, unknown> }> = [];
+  const posts: Array<{ channel: string; text: string; blocks?: Record<string, unknown>[] }> = [];
+  const responses: Array<{ url: string; body: Record<string, unknown> }> = [];
   const api: SlackApi = {
     async viewsOpen(triggerId, view) {
       calls.push({ triggerId, view });
       if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       return ok ? { ok: true } : { ok: false, error: "expired_trigger_id" };
     },
+    async postMessage(channel, text, blocks) {
+      posts.push({ channel, text, blocks });
+      return { ok: true };
+    },
+    async respond(url, body) {
+      responses.push({ url, body });
+      return { ok: true };
+    },
   };
-  return { api, calls };
+  return { api, calls, posts, responses };
 }
 let tsCounter = 0;
 const sig = (b: string) => signed(b, NOW + (tsCounter++ % 200));

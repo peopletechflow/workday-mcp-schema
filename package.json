@@ -20,7 +20,8 @@
     "admin": "node dist/cli/admin.js",
     "db:migrate": "node dist/cli/admin.js migrate",
     "check:durable": "tsx scripts/check-durable.ts",
-    "check": "npm run typecheck && npm run check:rbac && npm run check:integrations && npm run check:durable"
+    "check:mcp": "tsx scripts/check-mcp.ts",
+    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:durable"
   },
   "engines": {
     "node": ">=18"
@@ -33,6 +34,7 @@
   ],
   "license": "MIT",
   "private": true,
+  "packageManager": "pnpm@10.12.4",
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.91",
     "@modelcontextprotocol/sdk": "^1.32.1",
@@ -46,5 +48,10 @@
     "@types/pg": "^8.23.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

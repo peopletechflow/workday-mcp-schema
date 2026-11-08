@@ -17,6 +17,7 @@ import type { McpToolError } from "../schemas/errors.js";
 import type { Role } from "../rbac/index.js";
 import type { AssignmentStore } from "../rbac/index.js";
 import { assertToolAllowedForUser, RbacDeniedError } from "../rbac/index.js";
+import { registryEntry } from "./registry.js";
 
 export type ToolDeps = {
   config: AppConfig;
@@ -38,6 +39,20 @@ type Out<O extends z.ZodRawShape> = z.infer<z.ZodObject<O>>;
 type In<I extends z.ZodRawShape> = z.infer<z.ZodObject<I>>;
 
 export const PREVIEW_TTL_SECONDS = 900;
+
+const registered = new WeakMap<McpServer, string[]>();
+
+/** Record a tool name as registered on this server (registerRead/registerWritePair do this). */
+export function markRegistered(server: McpServer, name: string): void {
+  const list = registered.get(server) ?? [];
+  list.push(name);
+  registered.set(server, list);
+}
+
+/** Every tool name registered on this server, for the startup registry invariant. */
+export function registeredToolNames(server: McpServer): string[] {
+  return [...(registered.get(server) ?? [])];
+}
 
 export class ToolUserError extends Error {
   constructor(readonly code: McpToolError["error"], message: string) {
@@ -83,11 +98,17 @@ async function signIn(deps: ToolDeps, userId: string): Promise<string> {
   return requireUserAccessToken(deps.config, deps.tokenStore, userId, deps.pendingPkce);
 }
 
-const annotationsFor = (c: ToolContract<z.ZodRawShape, z.ZodRawShape>) => ({
+/**
+ * MCP tool hints. Clients use these to decide whether to ask the human first, so they err on
+ * the side of caution: previews read live Workday state (open world) and mint a new token each
+ * call (not idempotent); cancel/deny commits are destructive.
+ */
+export const annotationsFor = (c: { name: string; toolClass: ToolContract<z.ZodRawShape, z.ZodRawShape>["toolClass"] }) => ({
   readOnlyHint: c.toolClass !== "write-commit",
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: c.toolClass !== "write-preview",
+  destructiveHint: c.toolClass === "write-commit" && registryEntry(c.name)?.destructive === true,
+  idempotentHint: c.toolClass !== "write-preview",
+  // Everything but the static catalog talks to Workday.
+  openWorldHint: registryEntry(c.name)?.surface !== "catalog",
 });
 
 /** Register a read tool. Handler returns data matching contract.output (validated). */
@@ -98,6 +119,7 @@ export function registerRead<I extends z.ZodRawShape, O extends z.ZodRawShape>(
   handler: (ctx: CallCtx, args: In<I>) => Promise<Out<O>>,
 ): void {
   const c = contract as unknown as ToolContract<z.ZodRawShape, z.ZodRawShape>;
+  markRegistered(server, c.name);
   server.registerTool(
     c.name,
     { title: c.title, description: c.description, inputSchema: c.input, outputSchema: c.output, annotations: annotationsFor(c) },
@@ -159,6 +181,7 @@ export function registerWritePair<
     };
   });
 
+  markRegistered(server, k.name);
   server.registerTool(
     k.name,
     { title: k.title, description: k.description, inputSchema: k.input, outputSchema: k.output, annotations: annotationsFor(k) },
@@ -178,8 +201,9 @@ export function registerWritePair<
           await deps.audit.log({ ts: new Date().toISOString(), userId, tool: k.name, inputs: { ...auditInputs, replay: true }, result: cached.status === "ok" ? "ok" : "error", workdayEventId: cached.workdayEventId, latencyMs: Date.now() - started });
           return cached.status === "ok" ? ok(k, { ...(cached.body as object), replayed: true }) : fail(cached.body as McpToolError);
         }
-        const payload = deps.previewStore.consumeGeneric<W>(args.previewToken, userId, kind);
+        // Sign in first so a SIGN_IN_REQUIRED retry still has its preview token.
         const accessToken = await signIn(deps, userId);
+        const payload = deps.previewStore.consumeGeneric<W>(args.previewToken, userId, kind);
         const out = await execute({ userId, accessToken }, payload.data);
         const body = { replayed: false, submitted: !out.reusedExisting, reusedExisting: out.reusedExisting, summary: payload.summary, result: out.result };
         const res = ok(k, body);

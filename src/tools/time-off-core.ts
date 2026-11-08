@@ -61,17 +61,19 @@ export type TimeOffCommitOutcome =
   | { replayed: false; status: "ok"; body: TimeOffCommitBody; preview: TimeOffPreviewPayload };
 
 /**
- * Commit with the user's own token. Idempotent per (user, tool, key). Throws on failure after
- * recording the error under the idempotency key (same behavior as the original MCP tool).
+ * Commit with the user's own token. Idempotent per (user, tool, key). Workday failures are
+ * recorded under the idempotency key; sign-in / preview errors are not.
  */
 export async function commitTimeOffPreview(deps: TimeOffCoreDeps, userId: string, previewToken: string, idempotencyKey: string): Promise<TimeOffCommitOutcome> {
   assertToolEnabled(deps.config, COMMIT_TOOL);
   const cached = deps.idempotency.get(userId, COMMIT_TOOL, idempotencyKey);
   if (cached) return { replayed: true, status: cached.status, body: cached.body, workdayEventId: cached.workdayEventId };
+  // Sign-in and preview problems are fixable by the caller: resolve them before consuming the
+  // preview, and do not pin them to the idempotency key (a retry with the same key must work).
+  await ensureFixtureSession(deps.config, deps.tokenStore, userId);
+  const accessToken = await requireUserAccessToken(deps.config, deps.tokenStore, userId, deps.pendingPkce);
+  const preview = deps.previewStore.consume(previewToken, userId, "request_time_off");
   try {
-    const preview = deps.previewStore.consume(previewToken, userId, "request_time_off");
-    await ensureFixtureSession(deps.config, deps.tokenStore, userId);
-    const accessToken = await requireUserAccessToken(deps.config, deps.tokenStore, userId, deps.pendingPkce);
     const input: TimeOffRequestInput = {
       startDate: preview.startDate,
       endDate: preview.endDate,

@@ -1,9 +1,11 @@
 import type { AppConfig } from "./config.js";
 import {
+  OAuthTokenError,
   SignInRequiredError,
   buildAuthorizeUrl,
   createPkcePair,
   refreshAccessToken,
+  rememberPkce,
   type OAuthTokens,
   type PkcePair,
 } from "./auth/oauth.js";
@@ -19,12 +21,14 @@ export async function requireUserAccessToken(
   userId: string,
   pendingPkce: Map<string, PkcePair>,
 ): Promise<string> {
-  const existing = await tokenStore.get(userId);
-  if (!existing) {
+  const signInRequired = (): SignInRequiredError => {
     const pkce = createPkcePair();
-    pendingPkce.set(pkce.state, pkce);
-    throw new SignInRequiredError(buildAuthorizeUrl(config, pkce));
-  }
+    rememberPkce(pendingPkce, pkce);
+    return new SignInRequiredError(buildAuthorizeUrl(config, pkce));
+  };
+
+  const existing = await tokenStore.get(userId);
+  if (!existing) throw signInRequired();
 
   if (existing.expiresAt > Date.now() + 60_000) {
     return existing.accessToken;
@@ -32,12 +36,20 @@ export async function requireUserAccessToken(
 
   if (!existing.refreshToken) {
     await tokenStore.delete(userId);
-    const pkce = createPkcePair();
-    pendingPkce.set(pkce.state, pkce);
-    throw new SignInRequiredError(buildAuthorizeUrl(config, pkce));
+    throw signInRequired();
   }
 
-  const refreshed: OAuthTokens = await refreshAccessToken(config, existing.refreshToken);
+  let refreshed: OAuthTokens;
+  try {
+    refreshed = await refreshAccessToken(config, existing.refreshToken);
+  } catch (err) {
+    // Only a refused grant kills the stored token; outages and timeouts keep it for a retry.
+    if (err instanceof OAuthTokenError && err.definitive) {
+      await tokenStore.delete(userId);
+      throw signInRequired();
+    }
+    throw err;
+  }
   await tokenStore.set(userId, refreshed);
   return refreshed.accessToken;
 }

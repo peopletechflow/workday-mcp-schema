@@ -11,4 +11,6 @@ export * from "./http.js";
 export * from "./link.js";
 export * from "./slack/api.js";
 export * from "./slack/commands.js";
+export * from "./slack/submit.js";
+export * from "./slack/errors.js";
 export * from "./approvals/execution.js";

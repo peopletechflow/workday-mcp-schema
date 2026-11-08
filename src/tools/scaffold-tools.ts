@@ -7,10 +7,10 @@ import type { ToolContract } from "../schemas/tools/contract.js";
 import type { ToolDeps } from "./framework.js";
 import { registerRead, registerWritePair, ToolUserError } from "./framework.js";
 
-const page = <R>(rows: R[], limit: number, offset: number) => ({
-  rows: rows.slice(offset, offset + Math.min(limit, MAX_RECORDS_PER_CALL)),
-  page: { total: rows.length, limit, offset },
-});
+const page = <R>(rows: R[], limit: number, offset: number) => {
+  const capped = Math.min(limit, MAX_RECORDS_PER_CALL);
+  return { rows: rows.slice(offset, offset + capped), page: { total: rows.length, limit: capped, offset } };
+};
 
 /** Registers every scaffolded tool beyond the original time-off trio. */
 export function registerScaffoldTools(server: McpServer, deps: ToolDeps): void {

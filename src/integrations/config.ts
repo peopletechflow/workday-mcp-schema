@@ -41,8 +41,15 @@ export type NotionConfig = {
 
 export type ApprovalConfig = {
   policyPath?: string;
-  ttlMs: number;
+  /** How long an approver has to decide after the request is proposed. */
+  decisionTtlMs: number;
+  /** How long the requester has to submit after approval. */
+  commitWindowMs: number;
 };
+
+const HOUR_MS = 60 * 60 * 1000;
+const ttl = (raw: string | undefined, fallback: number) =>
+  z.coerce.number().int().min(60_000).max(14 * 24 * HOUR_MS).catch(fallback).parse(raw ?? fallback);
 
 export type IntegrationConfig = { slack: SlackConfig; notion: NotionConfig; approvals: ApprovalConfig };
 
@@ -82,6 +89,10 @@ export function loadIntegrationConfig(env: NodeJS.ProcessEnv = process.env): Int
   return {
     slack,
     notion,
-    approvals: { policyPath: env.APPROVAL_POLICY_PATH || undefined, ttlMs: 15 * 60 * 1000 },
+    approvals: {
+      policyPath: env.APPROVAL_POLICY_PATH || undefined,
+      decisionTtlMs: ttl(env.APPROVAL_DECISION_TTL_MS, 72 * HOUR_MS),
+      commitWindowMs: ttl(env.APPROVAL_COMMIT_WINDOW_MS, 24 * HOUR_MS),
+    },
   };
 }

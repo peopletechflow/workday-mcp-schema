@@ -5,7 +5,8 @@
  *   exact Workday payload stored in the approval (hash bound to tenant, requester, tool, target).
  *   Requires the requester to have a linked Workday token (no anonymous previews).
  * commitApproved: caller identity from a verified channel only; the executor is fixed here.
- *   beginCommit (row lock + ledger) -> requester's own token -> duplicate check -> submit ->
+ *   lookupCommit (read-only: owner, tenant, RBAC, finished ledger result) -> requester's own
+ *   token (new executions only, no row lock held) -> beginCommit (row lock + ledger) -> duplicate check -> submit ->
  *   finishCommit. Definitive Workday 4xx -> failed. Timeout / 5xx / no id -> unknown (never
  *   auto-resubmitted). Contract-unvalidated operations fail before any state change.
  */
@@ -16,10 +17,11 @@ import { ApprovalError, type ApprovalRequest } from "./workflow.js";
 import type { BoundIdentity } from "../identity.js";
 import type { DbApprovalBackend } from "../../store/approvals.js";
 import type { WorkdayClient } from "../../workday/client.js";
-import { ContractNotValidatedError, WorkdayApiError, WorkdayRequestValidationError } from "../../workday/client.js";
-import type { AccessTokenProvider } from "../../auth/user-tokens.js";
+import { buildRequestTimeOffBody, ContractNotValidatedError, WorkdayApiError, WorkdayRequestValidationError } from "../../workday/client.js";
+import { LinkRequiredError, type AccessTokenProvider } from "../../auth/user-tokens.js";
 import type { TimeOffRequestInput } from "../../workday/types.js";
 import type { LogFn } from "../../observability/log.js";
+import type { Queryable } from "../../store/db.js";
 
 export const COMMIT_TOOL = "commit_request_time_off";
 export const PREVIEW_TOOL = "preview_request_time_off";
@@ -35,6 +37,12 @@ export class ApprovalExecutionService {
       backend: DbApprovalBackend;
       client: WorkdayClient;
       accessToken: AccessTokenProvider;
+      /**
+       * Cheap "has a stored Workday link" check for the Slack ack paths (3 s limit). When set,
+       * propose does not refresh the token; the refresh happens at commit, off the ack path.
+       * When absent, propose resolves a usable access token (may call the token endpoint).
+       */
+      linked?: (userId: string) => Promise<boolean>;
       authzFor: AuthzResolver;
       typeMap: TimeOffTypeMap;
       /** Operations required for a commit; checked before any state change. */
@@ -47,7 +55,13 @@ export class ApprovalExecutionService {
     if (identity.tenantId !== this.d.tenantId) throw new ApprovalError("CROSS_TENANT", "Identity tenant does not match this deployment's Workday tenant.");
   }
 
-  async proposeTimeOff(requester: BoundIdentity, form: FormTimeOff, source: ApprovalRequest["source"]): Promise<ApprovalRequest> {
+  /**
+   * Everything propose checks except creating the request: entitlements, type mapping, date
+   * range, Workday payload shape, and a usable linked token. Safe to call before consuming a
+   * form session, so a fixable error keeps the form open. Throws ApprovalError / RbacDeniedError
+   * / LinkRequiredError / TokenRefreshUnavailableError.
+   */
+  async checkTimeOff(requester: BoundIdentity, form: FormTimeOff): Promise<{ authz: Awaited<ReturnType<AuthzResolver>>; willSubmit: TimeOffRequestInput }> {
     this.assertTenant(requester);
     const authz = await this.d.authzFor(requester);
     for (const toolName of [PREVIEW_TOOL, COMMIT_TOOL]) {
@@ -56,7 +70,6 @@ export class ApprovalExecutionService {
     const type = this.d.typeMap[form.timeOffType];
     if (!type) throw new ApprovalError("UNKNOWN_TYPE", "Time-off type is not mapped for this tenant.");
     if (form.endDate < form.startDate) throw new ApprovalError("BAD_RANGE", "End date before start date.");
-    await this.d.accessToken(requester.userId); // must be linked and signed in
     const willSubmit: TimeOffRequestInput = {
       startDate: form.startDate,
       endDate: form.endDate,
@@ -65,6 +78,30 @@ export class ApprovalExecutionService {
       timeOffType: { ...type },
       ...(form.comment ? { comment: form.comment } : {}),
     };
+    // Reject payloads Workday cannot accept now, not after an approver has spent time on them.
+    try {
+      buildRequestTimeOffBody(willSubmit);
+    } catch (e) {
+      if (e instanceof WorkdayRequestValidationError) throw new ApprovalError("INVALID_REQUEST", e.message);
+      throw e;
+    }
+    // Must be linked. With `linked` this is a local read (no token endpoint call inside a Slack ack);
+    // a dead refresh token then surfaces at commit, where the request stays approved for a re-link.
+    if (this.d.linked) {
+      if (!(await this.d.linked(requester.userId))) throw new LinkRequiredError();
+    } else {
+      await this.d.accessToken(requester.userId);
+    }
+    return { authz, willSubmit };
+  }
+
+  async proposeTimeOff(
+    requester: BoundIdentity,
+    form: FormTimeOff,
+    source: ApprovalRequest["source"],
+    opts: { claim?: (q: Queryable) => Promise<boolean> } = {},
+  ): Promise<ApprovalRequest> {
+    const { authz, willSubmit } = await this.checkTimeOff(requester, form);
     const summary = `Time off ${form.timeOffType} ${form.startDate} to ${form.endDate} (${form.quantity} days)`;
     const req = await this.d.backend.propose({
       requester,
@@ -74,6 +111,7 @@ export class ApprovalExecutionService {
       change: { kind: "request_time_off", willSubmit },
       summary,
       source,
+      ...(opts.claim ? { claim: opts.claim } : {}),
     });
     this.d.log?.({ evt: "approval.proposed", req: req.id, source });
     return req;
@@ -83,17 +121,18 @@ export class ApprovalExecutionService {
     this.assertTenant(caller);
     this.d.assertCommitContract?.();
     const authz = await this.d.authzFor(caller);
+    // 1. Read-only check: requester, tenant and permission first; a finished commit is returned
+    //    from the ledger without refreshing or re-linking the Workday token.
+    const seen = await this.d.backend.lookupCommit({ requestId, caller, authz });
+    if (seen.kind === "replay") return seen.result;
+    // 2. New execution only: resolve the requester's token with no approval row lock held. A
+    //    missing link or an outage leaves the request 'approved' for a re-link / retry.
+    // 3. beginCommit re-checks everything under the row lock and claims the ledger (races replay).
+    const token = await this.d.accessToken(caller.userId);
     const begun = await this.d.backend.beginCommit({ requestId, caller, authz, idempotencyKey });
     if (begun.kind === "replay") return begun.result;
     const req = begun.request;
     const input = (req.change as { willSubmit: TimeOffRequestInput }).willSubmit;
-    let token: string;
-    try {
-      token = await this.d.accessToken(req.requesterUserId);
-    } catch (e) {
-      await this.d.backend.finishCommit(req.id, { state: "error", body: { error: "LINK_REQUIRED" } });
-      throw e;
-    }
     try {
       const existing = await this.d.client.findMatchingTimeOffRequest(token, input);
       const result = existing ?? (await this.d.client.submitTimeOffRequest(token, input));

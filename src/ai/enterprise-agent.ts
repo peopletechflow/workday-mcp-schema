@@ -6,12 +6,12 @@
  * `createMCPClient`). Every tool execute path must call `assertToolAllowedForUser`
  * before any Workday work. Writes still need preview → confirm (no auto-commit).
  */
-import { ToolLoopAgent, tool, type Tool } from "ai";
+import { ToolLoopAgent, stepCountIs, tool, type Tool } from "ai";
 import { z } from "zod";
 import type { Role } from "../rbac/index.js";
 import type { AssignmentStore } from "../rbac/index.js";
 import { assertToolAllowedForUser, permissionIdForTool } from "../rbac/index.js";
-import { TOOL_REGISTRY } from "../tools/registry.js";
+import { TOOL_REGISTRY, contractFor } from "../tools/registry.js";
 import { createEnterpriseModel, loadEnterpriseAiConfig, AiDisabledError } from "./client.js";
 import { AI_POLICY } from "./policy.js";
 
@@ -39,13 +39,26 @@ export type EnterpriseAgentOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
-const DEFAULT_INSTRUCTIONS = [
-  "You are the PeopleTechFlow enterprise Workday assistant.",
-  "Use only the provided tools. Prefer read tools first.",
-  "Never invent worker IDs or bypass RBAC.",
-  "For any write: call the preview tool, show the summary to the human, and only call commit when userConfirmed is true.",
-  "Do not auto-commit writes. Workday security on the user token remains authoritative.",
-].join(" ");
+/** Upper bound on model turns per request (docs/CONTEXT-ENGINEERING.md). */
+export const MAX_ENTERPRISE_AGENT_STEPS = 10;
+
+const DEFAULT_INSTRUCTIONS = `<background>
+You are the PeopleTechFlow enterprise Workday assistant, acting for one signed-in user. Tools were chosen from that user's permissions; Workday security on their own token stays authoritative.
+</background>
+
+<rules>
+1. Use only the provided tools. A missing tool means the action is not allowed; say so.
+2. Never invent worker ids or act for another user. Identity comes from the server.
+3. Writes are two steps: call the preview_* tool, show its summary to the human, and call the matching commit_* tool only after the human confirms, with userConfirmed true, the preview token, and a fresh idempotency key. Never commit without that confirmation.
+</rules>
+
+<tool_guidance>
+Read first when the answer depends on current data. Use the narrowest input that answers the question. Do not repeat a call with the same input.
+</tool_guidance>
+
+<output>
+Plain language, a few sentences, quoting the values you relied on. For a preview, show the summary and ask for confirmation. For a commit, report the result id.
+</output>`;
 
 /**
  * Build AI SDK tools from the Layer-3 registry. Each execute:
@@ -66,10 +79,14 @@ export function buildLayer3AiTools(
     const toolName = entry.name;
     const isCommit = entry.toolClass === "write-commit";
 
+    // Description and parameters come from the schema-first contract so the model sees what a
+    // caller would (what it does, who may use it, every input). buildReason is internal rationale.
+    const contract = contractFor(toolName);
+    const inputSchema: z.ZodTypeAny = contract ? z.object(contract.input).strict() : z.record(z.unknown());
     tools[toolName] = tool({
-      description: `${entry.buildReason} [${entry.toolClass}; permission ${permissionIdForTool(toolName)}]`,
+      description: `${contract?.description ?? entry.buildReason} [${entry.toolClass}; permission ${permissionIdForTool(toolName)}]`,
       // Args are validated again by each tool's Zod contract inside invokeTool / framework.
-      inputSchema: z.record(z.unknown()),
+      inputSchema,
       execute: async (args: Record<string, unknown>) => {
         assertToolAllowedForUser({
           userId: session.userId,
@@ -123,6 +140,7 @@ export function createEnterpriseAgent(options: EnterpriseAgentOptions): ToolLoop
     model: createEnterpriseModel(env),
     instructions: options.instructions ?? DEFAULT_INSTRUCTIONS,
     tools,
+    stopWhen: stepCountIs(MAX_ENTERPRISE_AGENT_STEPS),
     runtimeContext: {
       userId: session.userId,
       roles: [...session.roles],

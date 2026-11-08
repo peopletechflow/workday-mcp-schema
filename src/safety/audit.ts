@@ -21,6 +21,12 @@ const PII_KEYS = new Set([
   "authorization",
   "password",
   "secret",
+  // Free text: may contain health or personal detail (e.g. sick-leave comments).
+  "comment",
+  "comments",
+  "reason",
+  "note",
+  "notes",
 ]);
 
 export type AuditEntry = {
@@ -67,7 +73,15 @@ export class AuditLogger {
         ? entry.errorMessage.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
         : undefined,
     };
-    await mkdir(dirname(this.path), { recursive: true });
-    await appendFile(this.path, `${JSON.stringify(safe)}\n`, "utf8");
+    try {
+      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+      await appendFile(this.path, `${JSON.stringify(safe)}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (err) {
+      // Never let an audit write failure turn a finished Workday call into a tool error.
+      // stderr only (stdout is the MCP channel); no entry content is printed.
+      process.stderr.write(
+        `${JSON.stringify({ src: "audit", evt: "write_failed", tool: entry.tool, err: (err as NodeJS.ErrnoException).code ?? "error" })}\n`,
+      );
+    }
   }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Admin CLI (audited in admin_audit). Usage: npm run admin -- <command> [--flags]
+ * Admin CLI (audited in admin_audit). Usage: pnpm admin <command> [--flags]
  *   migrate | schema-status | keygen
  *   link-invite --slack-team T.. --slack-user U.. --user-id <id>
  *   link-revoke --slack-team T.. --slack-user U..
@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { createPgDb } from "../store/db.js";
 import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
 import { buildRuntime, loadRuntimeConfig } from "../server/runtime.js";
+import { parseTypeMap } from "../integrations/approvals/execution.js";
 
 function flags(argv: string[]): Record<string, string | true> {
   const out: Record<string, string | true> = {};
@@ -79,8 +80,7 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
       case "reconcile":
         return print(await rt.service.reconcile(needActor(), req(f, "id"), f["confirm-not-submitted"] === true));
       case "probe-time-off": {
-        const map = JSON.parse(env.WORKDAY_TIME_OFF_TYPE_MAP ?? "{}") as Record<string, { type: "Time_Off_Type_ID"; value: string }>;
-        const type = map[req(f, "type")];
+        const type = parseTypeMap(env.WORKDAY_TIME_OFF_TYPE_MAP)[req(f, "type")];
         if (!type) throw new Error("--type not in WORKDAY_TIME_OFF_TYPE_MAP");
         const from = req(f, "from"), to = req(f, "to");
         const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;

@@ -1,4 +1,4 @@
-/** Forward-only schema migrations. Applied by `npm run db:migrate` (or at boot with DB_MIGRATE_ON_START=true). */
+/** Forward-only schema migrations. Applied by `pnpm run db:migrate` (or at boot with DB_MIGRATE_ON_START=true). */
 import type { Db } from "./db.js";
 
 export const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [

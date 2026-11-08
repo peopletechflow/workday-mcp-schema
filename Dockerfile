@@ -1,11 +1,13 @@
 # Integration runtime image. Secrets are injected as environment variables at run time.
+# pnpm is pinned through the packageManager field in package.json (corepack reads it).
 FROM node:24-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN pnpm run build && pnpm prune --prod
 
 FROM node:24-slim
 WORKDIR /app

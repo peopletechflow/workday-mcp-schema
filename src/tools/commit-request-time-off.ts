@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { IdempotencyKeySchema, PreviewTokenSchema } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
-import { assertToolAllowed, type Role } from "../rbac/index.js";
+import { assertToolAllowedForUser, type AssignmentStore, type Role } from "../rbac/index.js";
 import type { WorkdayClient } from "../workday/client.js";
 import { WorkdayApiError } from "../workday/client.js";
 import type { AuditLogger } from "../safety/audit.js";
@@ -12,6 +12,7 @@ import type { TokenStore } from "../auth/token-store.js";
 import type { PkcePair } from "../auth/oauth.js";
 import { SignInRequiredError } from "../auth/oauth.js";
 import { z } from "zod";
+import { annotationsFor, markRegistered } from "./framework.js";
 import { commitRequestTimeOff } from "../schemas/tools/self-service.js";
 import { commitTimeOffPreview } from "./time-off-core.js";
 
@@ -30,10 +31,13 @@ export function registerCommitRequestTimeOff(
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
     resolveUserRoles: () => Role[];
+    /** User grants/denies; denies win over roles (fail closed). */
+    assignments?: AssignmentStore;
   },
 ): void {
   const toolName = "commit_request_time_off";
 
+  markRegistered(server, toolName);
   server.registerTool(
     toolName,
     {
@@ -43,19 +47,14 @@ export function registerCommitRequestTimeOff(
         "preview token. Requires userConfirmed=true and an idempotencyKey. Retries with the same " +
         "key return the stored result and do not duplicate. Who: authenticated worker. Writes: yes.",
       inputSchema: InputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: annotationsFor({ name: toolName, toolClass: "write-commit" }),
     },
     async (args) => {
       const started = Date.now();
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
-        assertToolAllowed(deps.resolveUserRoles(), toolName);
+        assertToolAllowedForUser({ userId, roles: deps.resolveUserRoles(), toolName, assignments: deps.assignments });
         if (args.userConfirmed !== true) {
           throw new Error("userConfirmed must be true before committing a write.");
         }

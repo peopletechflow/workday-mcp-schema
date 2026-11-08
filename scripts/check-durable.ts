@@ -1,23 +1,24 @@
 /**
  * Offline checks for the production runtime: real composition (buildRuntime + router) on Postgres
  * (PGlite by default, real Postgres when CHECK_DATABASE_URL is set), with Workday, Slack, and OAuth
- * provider fakes. Run: npm run check:durable
+ * provider fakes. Run: pnpm run check:durable
  */
 import assert from "node:assert/strict";
 import type { Db } from "../src/store/db.js";
 import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../src/store/migrations.js";
 import { KeyRing } from "../src/store/crypto.js";
-import { DbTokenStore } from "../src/store/repos.js";
+import { DbTokenStore, pruneExpired } from "../src/store/repos.js";
 import { DbApprovalBackend } from "../src/store/approvals.js";
 import { loadRuntimeConfig } from "../src/server/runtime.js";
 import { FixtureWorkdayClient } from "../src/workday/fixtures.js";
 import { HttpWorkdayClient, WorkdayAmbiguousResultError, WorkdayApiError, ContractNotValidatedError, buildRequestTimeOffBody, type WorkdayClient } from "../src/workday/client.js";
 import { loadConfig } from "../src/config.js";
-import { durableAccessTokens, LinkRequiredError } from "../src/auth/user-tokens.js";
+import { durableAccessTokens, LinkRequiredError, TokenRefreshUnavailableError } from "../src/auth/user-tokens.js";
 import { buildIntegrationToolset } from "../src/ai/integration-agent.js";
 import type { TimeOffRequestInput, TimeOffRequestResult } from "../src/workday/types.js";
 import { testDb } from "./lib/test-db.js";
-import { KEY, SECRET, TEAM, baseEnv, button, cmdBody, fakeSlack, instance, seed, signed, submission, type Instance } from "./lib/harness.js";
+import { BackgroundTasks } from "../src/integrations/background.js";
+import { KEY, RESPONSE_URL, SECRET, TEAM, baseEnv, button, cmdBody, fakeSlack, instance, seed, signed, slackText, submission, submitButton, type Instance } from "./lib/harness.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -51,8 +52,8 @@ class CountingClient extends FixtureWorkdayClient {
     return super.submitTimeOffRequest(t, i);
   }
 }
-async function approvedRequest(rt: Instance) {
-  const r = await rt.service.proposeTimeOff(alice, form, "api");
+async function approvedRequest(rt: Instance, over: Partial<typeof form> = {}) {
+  const r = await rt.service.proposeTimeOff(alice, { ...form, ...over }, "api");
   await rt.backend.decide({ requestId: r.id, approver: { tenantId: "acme", userId: "mgr" }, decision: "approve", presentedHash: r.changeHash });
   return r;
 }
@@ -106,7 +107,7 @@ await check("e2e across instances and restart: command -> modal -> submit (A) ->
   assert.equal(client.submits, 1);
   assert.equal((await A.backend.get(req.id))!.status, "committed");
   const st = cmdBody(`status ${req.id}`, { user_id: "U0MALLORY" });
-  assert.match(text(await A.route("POST", "/slack/commands", st, signed(st))), /NOT_FOUND/);
+  assert.match(text(await A.route("POST", "/slack/commands", st, signed(st))), /Unknown request/);
 });
 
 await check("replay guard and form nonce are shared across instances", async () => {
@@ -190,7 +191,8 @@ await check("revocation and deny at execution: revoked link, role deny, deleted 
   const r2 = await approvedRequest(rt);
   await rt.tokens.delete("alice");
   await assert.rejects(rt.service.commitApproved(alice, r2.id, "tok-key-0001"), LinkRequiredError);
-  assert.equal((await rt.backend.get(r2.id))!.status, "failed");
+  // A missing link must not burn the approval: the request stays approved for a retry after re-linking.
+  assert.equal((await rt.backend.get(r2.id))!.status, "approved");
   await rt.links.revoke("ops", TEAM, "U0ALICE");
   const s = cmdBody(`status ${r2.id}`);
   assert.match(text(await rt.route("POST", "/slack/commands", s, signed(s))), /not linked/);
@@ -349,6 +351,386 @@ await check("agent propose uses durable service; logs contain no secrets, tokens
   assert.equal((await rt.route("POST", "/slack/events", ev, signed(ev))).status, 200);
   const logs = rt.logs.join("\n");
   for (const s of ["SENSITIVE", SECRET, "medical", KEY]) assert.ok(!logs.includes(s), `log leaked ${s.slice(0, 8)}`);
+});
+
+await check("re-link after a missing token: same approved request submits without a new approval", async () => {
+  const db = await seeded();
+  const client = new CountingClient();
+  const rt = instance(db, { client });
+  const r = await approvedRequest(rt);
+  await rt.tokens.delete("alice");
+  const s1 = cmdBody(`submit ${r.id}`);
+  assert.match(text(await rt.route("POST", "/slack/commands", s1, signed(s1))), /\/workday link/);
+  assert.equal((await rt.backend.get(r.id))!.status, "approved");
+  await rt.tokens.set("alice", { accessToken: "relinked", refreshToken: "rt", expiresAt: Date.now() + 3_600_000, tokenType: "Bearer" });
+  const s2 = cmdBody(`submit ${r.id}`);
+  assert.match(text(await rt.route("POST", "/slack/commands", s2, signed(s2))), /Submitted to Workday/);
+  assert.equal(client.submits, 1);
+});
+
+await check("token refresh outage keeps the token and the approval; refused grant still unlinks", async () => {
+  const db = await seeded();
+  const rt = instance(db, { fetchImpl: (async () => new Response("{}", { status: 503 })) as unknown as typeof fetch });
+  const r = await approvedRequest(rt);
+  await rt.tokens.set("alice", { accessToken: "old", refreshToken: "rt-ok", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  await assert.rejects(rt.service.commitApproved(alice, r.id, "outage-key-01"), TokenRefreshUnavailableError);
+  assert.ok(await rt.tokens.get("alice"), "token deleted during an outage");
+  assert.equal((await rt.backend.get(r.id))!.status, "approved");
+  const timeout = durableAccessTokens(db, rt.tokens, loadConfig(baseEnv()), (async () => { throw new DOMException("timed out", "TimeoutError"); }) as unknown as typeof fetch);
+  await assert.rejects(timeout("alice"), TokenRefreshUnavailableError);
+  assert.ok(await rt.tokens.get("alice"), "token deleted on timeout");
+});
+
+await check("approval windows: approver may decide after 15 minutes; approval opens its own submit window (DB clock)", async () => {
+  const db = await seeded();
+  const client = new CountingClient();
+  const rt = instance(db, { client, env: { APPROVAL_DECISION_TTL_MS: String(72 * 3_600_000), APPROVAL_COMMIT_WINDOW_MS: String(3_600_000) } });
+  const r = await rt.service.proposeTimeOff(alice, form, "api");
+  assert.ok(r.expiresAt > Date.now() + 71 * 3_600_000, "decision deadline should follow APPROVAL_DECISION_TTL_MS (72h), not a fixed 15 minutes");
+  // Two hours later (well past the old fixed 15 minutes) the approver can still decide.
+  await db.query("UPDATE approval_requests SET created_at = now() - interval '2 hours', expires_at = expires_at - interval '2 hours' WHERE id = $1", [r.id]);
+  const d = await rt.backend.decide({ requestId: r.id, approver: { tenantId: "acme", userId: "mgr" }, decision: "approve", presentedHash: r.changeHash });
+  assert.equal(d.status, "approved");
+  assert.ok(d.expiresAt > Date.now() + 50 * 60_000 && d.expiresAt <= Date.now() + 61 * 60_000, "submit window should be ~1h from approval");
+  await rt.service.commitApproved(alice, r.id, "window-key-01");
+  assert.equal(client.submits, 1);
+  // Submit window over -> EXPIRED, persisted, nothing sent.
+  const r2 = await approvedRequest(rt);
+  await db.query("UPDATE approval_requests SET expires_at = now() - interval '1 second' WHERE id = $1", [r2.id]);
+  await assert.rejects(rt.service.commitApproved(alice, r2.id, "window-key-02"), /EXPIRED|submit window/);
+  assert.equal((await rt.backend.get(r2.id))!.status, "expired");
+  assert.equal(client.submits, 1);
+  // Decision deadline over -> pending request expires on the approver's click.
+  const r3 = await rt.service.proposeTimeOff(alice, { ...form, startDate: "2026-12-10", endDate: "2026-12-10", quantity: 1 }, "api");
+  await db.query("UPDATE approval_requests SET expires_at = now() - interval '1 second' WHERE id = $1", [r3.id]);
+  await assert.rejects(rt.backend.decide({ requestId: r3.id, approver: { tenantId: "acme", userId: "mgr" }, decision: "approve", presentedHash: r3.changeHash }), /NOT_PENDING|expired/);
+});
+
+await check("form: day-count and unlinked errors are shown on the modal before the session is used, so the user can resubmit", async () => {
+  const db = await seeded();
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api });
+  const c = cmdBody();
+  await rt.route("POST", "/slack/commands", c, signed(c));
+  const nonce = (slack.calls[0]!.view as { private_metadata: string }).private_metadata;
+  // Mon 2026-11-30 .. Fri 2026-12-11 is 12 calendar days; "10" cannot be sent to Workday.
+  const bad = submission(nonce, { start: "2026-11-30", end: "2026-12-11", type: "vacation", days: "10" });
+  const r1 = JSON.parse((await rt.route("POST", "/slack/interactions", bad, signed(bad))).body) as { response_action: string; errors: Record<string, string> };
+  assert.equal(r1.response_action, "errors");
+  assert.match(r1.errors.days ?? "", /calendar days/);
+  await rt.tokens.delete("alice");
+  const unlinked = submission(nonce, good);
+  const r2 = JSON.parse((await rt.route("POST", "/slack/interactions", unlinked, signed(unlinked))).body) as { errors: Record<string, string> };
+  assert.match(r2.errors.start ?? "", /\/workday link/);
+  assert.equal((await rt.backend.list("acme")).length, 0, "nothing proposed");
+  await rt.tokens.set("alice", { accessToken: "relinked", refreshToken: "rt", expiresAt: Date.now() + 3_600_000, tokenType: "Bearer" });
+  const ok = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear", "same form usable after fixing");
+});
+
+await check("production requires an explicit acknowledgement for unverified link signers", async () => {
+  const prod = { NODE_ENV: "production", WORKDAY_USE_FIXTURES: "false", WORKDAY_ABSENCE_API_VERSION: "v1", SLACK_BOT_TOKEN: "xoxb-fixture" };
+  assert.throws(() => loadRuntimeConfig(baseEnv(prod)), /LINK_ACCEPT_UNVERIFIED_SIGNER/);
+  assert.doesNotThrow(() => loadRuntimeConfig(baseEnv({ ...prod, LINK_ACCEPT_UNVERIFIED_SIGNER: "true" })));
+});
+
+await check("pruning removes expired form sessions and OAuth states", async () => {
+  const db = await seeded();
+  const rt = instance(db);
+  await rt.link.start(TEAM, "U0ALICE");
+  await db.query("UPDATE oauth_states SET expires_at = now() - interval '1 second'");
+  await db.query("INSERT INTO form_sessions (nonce, slack_team_id, slack_user_id, tenant_id, user_id, kind, expires_at) VALUES ('n-old', 'T', 'U', 'acme', 'alice', 'k', now() - interval '1 second')");
+  assert.ok((await pruneExpired(db)) >= 2);
+  assert.equal((await db.query("SELECT 1 FROM oauth_states")).rowCount, 0);
+  assert.equal((await db.query("SELECT 1 FROM form_sessions WHERE nonce = 'n-old'")).rowCount, 0);
+});
+
+await check("Slack UI lifecycle: form -> approver DMs + requester receipt -> Approve button replaces message and DMs a Submit button -> Submit commits once; no ids, tokens, or comment text leak", async () => {
+  const db = await seeded();
+  const client = new CountingClient();
+  const slack = fakeSlack();
+  const rt = instance(db, { client, slackApi: slack.api, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const help = cmdBody("help");
+  assert.match(text(await rt.route("POST", "/slack/commands", help, signed(help))), /opens the time-off form/);
+  const c = cmdBody();
+  await rt.route("POST", "/slack/commands", c, signed(c));
+  const nonce = (slack.calls[0]!.view as { private_metadata: string }).private_metadata;
+  const vs = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body).response_action, "clear");
+  await rt.background.drain(); // approver DMs run after the ack
+  const [req] = await rt.backend.list("acme");
+  assert.ok(req && req.status === "pending");
+  // Policy approvers: mgr, alice, hr. Alice is the requester, so DMs go to mgr and hr; alice gets a receipt.
+  assert.deepEqual(slack.posts.map((p) => p.channel).sort(), ["U0ALICE", "U0HR", "U0MGR"]);
+  const toMgr = slack.posts.find((p) => p.channel === "U0MGR")!;
+  assert.match(JSON.stringify(toMgr.blocks), /<@U0ALICE>/);
+  assert.match(JSON.stringify(toMgr.blocks), new RegExp(`${req.id}\\|${req.changeHash}`));
+  assert.match(JSON.stringify(slack.posts.find((p) => p.channel === "U0ALICE")!.blocks), /Sent for approval/);
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"approval_delivery"') && l.includes('"recipients":2')));
+  // Approver clicks Approve on the DM.
+  const approve = button(req.id, req.changeHash, "U0MGR", "wd_approval_approve", TEAM, RESPONSE_URL);
+  assert.equal((await rt.route("POST", "/slack/interactions", approve, signed(approve))).status, 200);
+  const replaced = slack.responses.at(-1)!;
+  assert.equal(replaced.url, RESPONSE_URL);
+  assert.equal(replaced.body.replace_original, true);
+  assert.match(JSON.stringify(replaced.body.blocks), /Approved\* by <@U0MGR>/);
+  assert.ok(!JSON.stringify(replaced.body.blocks).includes("wd_approval_approve"), "buttons removed after decision");
+  const toAlice = slack.posts.filter((p) => p.channel === "U0ALICE").at(-1)!;
+  assert.match(JSON.stringify(toAlice.blocks), /wd_approval_submit/);
+  // A second approver clicking later gets an ephemeral note, the message is not replaced again.
+  const late = button(req.id, req.changeHash, "U0HR", "wd_approval_approve", TEAM, RESPONSE_URL);
+  assert.equal((await rt.route("POST", "/slack/interactions", late, signed(late))).status, 403);
+  assert.equal(slack.responses.at(-1)!.body.replace_original, false);
+  assert.match(String(slack.responses.at(-1)!.body.text), /Request is approved/);
+  // Requester presses Submit to Workday.
+  const press = submitButton(req.id, "U0ALICE");
+  assert.equal((await rt.route("POST", "/slack/interactions", press, signed(press))).status, 200);
+  assert.equal(client.submits, 1);
+  assert.equal((await rt.backend.get(req.id))!.status, "committed");
+  assert.match(String(slack.responses.at(-1)!.body.text), /Submitted to Workday \(SUBMITTED, event evt_fixture_1\)/);
+  const all = slackText(slack);
+  for (const bad of ["SENSITIVE", KEY, SECRET, "alice", "RESPONSE_URL".toLowerCase()]) assert.ok(!all.includes(bad), `Slack saw ${bad.slice(0, 8)}`);
+});
+
+await check("slow Workday commit: ack within budget, final result replaces the ack via response_url (command and button); foreign response_url never called", async () => {
+  const db = await seeded();
+  const client = new CountingClient(120);
+  const slack = fakeSlack();
+  const rt = instance(db, { client, slackApi: slack.api, budgetMs: 30 });
+  const r1 = await approvedRequest(rt);
+  const t0 = Date.now();
+  const s1 = cmdBody(`submit ${r1.id}`, { response_url: RESPONSE_URL });
+  assert.match(text(await rt.route("POST", "/slack/commands", s1, signed(s1))), /Submitting .* to Workday/);
+  assert.ok(Date.now() - t0 < 110, "ack did not wait for Workday");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(client.submits, 1);
+  assert.equal((await rt.backend.get(r1.id))!.status, "committed");
+  assert.equal(slack.responses.at(-1)!.body.replace_original, true);
+  assert.match(String(slack.responses.at(-1)!.body.text), /Submitted to Workday/);
+  // Different dates each time, or the fixture's duplicate check would answer instantly with r1.
+  const r2 = await approvedRequest(rt, { startDate: "2026-12-07", endDate: "2026-12-07", quantity: 1 });
+  const press = submitButton(r2.id, "U0ALICE");
+  assert.equal((await rt.route("POST", "/slack/interactions", press, signed(press))).status, 200);
+  assert.match(String(slack.responses.at(-1)!.body.text), /Submitting/);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.match(String(slack.responses.at(-1)!.body.text), /Submitted to Workday/);
+  assert.equal(client.submits, 2);
+  const r3 = await approvedRequest(rt, { startDate: "2026-12-14", endDate: "2026-12-14", quantity: 1 });
+  const evil = submitButton(r3.id, "U0ALICE", "https://attacker.example/x");
+  const before = slack.responses.length;
+  await rt.route("POST", "/slack/interactions", evil, signed(evil));
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(slack.responses.length, before, "no post to a non-Slack URL");
+  assert.equal((await rt.backend.get(r3.id))!.status, "committed", "the commit itself still ran for the verified requester");
+});
+
+await check("Slack ack paths never call the Workday token endpoint: an expired access token still submits the form; the refresh happens at commit", async () => {
+  const db = await seeded();
+  let tokenCalls = 0;
+  const fetchImpl = (async () => {
+    tokenCalls++;
+    return new Response(JSON.stringify({ access_token: "fresh-SENSITIVE", expires_in: 3600 }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, fetchImpl });
+  await rt.tokens.set("alice", { accessToken: "stale", refreshToken: "rt-ok", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  const c = cmdBody();
+  await rt.route("POST", "/slack/commands", c, signed(c));
+  const nonce = (slack.calls[0]!.view as { private_metadata: string }).private_metadata;
+  const vs = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body).response_action, "clear");
+  assert.equal(tokenCalls, 0, "form submission must not block on a token refresh");
+  const [req] = await rt.backend.list("acme");
+  await rt.backend.decide({ requestId: req!.id, approver: { tenantId: "acme", userId: "mgr" }, decision: "approve", presentedHash: req!.changeHash });
+  await rt.service.commitApproved(alice, req!.id, "refresh-at-commit-1");
+  assert.equal(tokenCalls, 1, "refresh happens once, at commit");
+  await rt.tokens.delete("alice");
+  const vs2 = submission(nonce, good);
+  assert.equal((await rt.route("POST", "/slack/interactions", vs2, signed(vs2))).status, 403, "nonce already consumed");
+});
+
+/** Db wrapper that delays (or fails once) statements matching `re`, inside and outside transactions. */
+function slowDb(db: Db, re: RegExp, o: { delayMs?: number; failOnce?: boolean } = {}): Db {
+  let failed = false;
+  const wrap = (q: Pick<Db, "query">) => ({
+    query: (async (sql: string, params?: unknown[]) => {
+      if (re.test(sql)) {
+        if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
+        if (o.failOnce && !failed) {
+          failed = true;
+          throw new Error("injected database failure");
+        }
+      }
+      return q.query(sql, params as never);
+    }) as Db["query"],
+  });
+  return { ...db, query: wrap(db).query, tx: (fn) => db.tx((q) => fn(wrap(q) as typeof q)) } as Db;
+}
+async function openForm(rt: Instance, slack: ReturnType<typeof fakeSlack>): Promise<string> {
+  const c = cmdBody();
+  await rt.route("POST", "/slack/commands", c, signed(c));
+  return (slack.calls.at(-1)!.view as { private_metadata: string }).private_metadata;
+}
+function slowSlack(delayMs: number) {
+  const s = fakeSlack();
+  const post = s.api.postMessage.bind(s.api);
+  s.api.postMessage = async (...a) => (await new Promise((r) => setTimeout(r, delayMs)), post(...a));
+  return s;
+}
+
+await check("form ack: slow Slack DMs never delay the ack; one approval; DMs delivered after the ack", async () => {
+  const db = await seeded();
+  const slack = slowSlack(400);
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 150, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  const t0 = Date.now();
+  const out = await rt.route("POST", "/slack/interactions", vs, signed(vs));
+  const ackMs = Date.now() - t0;
+  assert.equal(JSON.parse(out.body).response_action, "clear");
+  assert.ok(ackMs < 300, `ack waited for Slack DMs (${ackMs} ms)`);
+  assert.equal(slack.posts.length < 3, true, "DMs still in flight at ack time");
+  assert.equal(await rt.background.drain(), 0);
+  assert.deepEqual(slack.posts.map((p) => p.channel).sort(), ["U0ALICE", "U0HR", "U0MGR"]);
+  assert.equal((await rt.backend.list("acme")).length, 1);
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"approval_delivery"') && l.includes('"recipients":2')));
+});
+
+await check("form ack: slow database acks with a 'submitting' view, finishes in the background, and a resubmit of the same form cannot create a second approval", async () => {
+  const base = await seeded();
+  const db = slowDb(base, /INSERT INTO approval_requests/, { delayMs: 300 });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 50, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  const t0 = Date.now();
+  const first = JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body) as { response_action: string; view?: unknown };
+  assert.ok(Date.now() - t0 < 250, "ack waited for the slow insert");
+  assert.equal(first.response_action, "update");
+  assert.match(JSON.stringify(first.view), /Submitting your request/);
+  // The user (or a retry) submits the same form while the first insert is still running.
+  const again = submission(nonce, good);
+  const second = await rt.route("POST", "/slack/interactions", again, signed(again));
+  assert.equal(await rt.background.drain(), 0);
+  const all = await rt.backend.list("acme");
+  assert.equal(all.length, 1, "exactly one approval");
+  if (second.body) {
+    const b = JSON.parse(second.body) as { response_action: string; errors?: Record<string, string> };
+    if (b.response_action === "update") {
+      // The second submit waited on the first one's row lock past the budget: its outcome is DMed.
+      assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), /already submitted/);
+    } else {
+      assert.ok(b.response_action === "errors" && /already submitted/.test(b.errors?.start ?? ""), "second submit reports the form was used");
+    }
+  } else {
+    assert.equal(second.status, 403);
+  }
+  // Requester learns the outcome after the ack (receipt DM carries the request id).
+  assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), new RegExp(all[0]!.id));
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"form_late_created"')));
+});
+
+await check("form ack: a late failure is delivered to the requester, not lost; the form stays usable", async () => {
+  const base = await seeded({ approvers: ["alice"] }); // only the requester: NO_APPROVER inside the transaction
+  const db = slowDb(base, /FROM approval_policies/, { delayMs: 200 });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 30, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body).response_action, "update");
+  await rt.background.drain();
+  assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), /No approver is configured/);
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"form_late_error"') && l.includes("NO_APPROVER")));
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  await rt.backend.setPolicy("ops", { tenantId: "acme", commitTool: "commit_request_time_off", approverUserIds: ["mgr"] });
+  const fast = instance(base, { slackApi: slack.api });
+  const ok = submission(nonce, good);
+  assert.equal(JSON.parse((await fast.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear", "same form usable after the failure");
+});
+
+await check("form ack: a database failure after the nonce claim rolls the claim back; retry creates exactly one approval", async () => {
+  const base = await seeded();
+  const db = slowDb(base, /INSERT INTO approval_requests/, { failOnce: true });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  await assert.rejects(rt.route("POST", "/slack/interactions", vs, signed(vs)), /injected database failure/);
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  const retry = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", retry, signed(retry))).body).response_action, "clear");
+  assert.equal((await rt.backend.list("acme")).length, 1);
+});
+
+await check("form ack: permission deny is still shown on the modal, nothing created, form not consumed", async () => {
+  const db = await seeded();
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 1_000 });
+  const nonce = await openForm(rt, slack);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"], denies: ["tool:commit_request_time_off"] });
+  const vs = submission(nonce, good);
+  const b = JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body) as { response_action: string; errors: Record<string, string> };
+  assert.equal(b.response_action, "errors");
+  assert.match(b.errors.start ?? "", /not allowed/);
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"] });
+  const ok = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear");
+});
+
+await check("background runner: bounded per task, capped in flight, failures logged, drain waits", async () => {
+  const logs: string[] = [];
+  const bg = new BackgroundTasks({ log: (f) => logs.push(JSON.stringify(f)), timeoutMs: 50, maxInFlight: 2 });
+  assert.equal(bg.run("hang", () => new Promise(() => {})), true);
+  assert.equal(bg.run("boom", async () => { throw new Error("x"); }), true);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(bg.run("third", async () => {}), true, "slot freed by the failed task");
+  assert.equal(bg.run("fourth", async () => {}), false, "cap reached while the hanging task runs");
+  assert.equal(await bg.drain(500), 0);
+  assert.ok(logs.some((l) => l.includes("background_timeout")) && logs.some((l) => l.includes("background_failed")) && logs.some((l) => l.includes("background_refused")));
+});
+
+await check("commit replay: a finished commit is returned from the ledger without touching the OAuth provider (expired or deleted token)", async () => {
+  const db = await seeded();
+  let tokenCalls = 0;
+  const fetchImpl = (async () => (tokenCalls++, new Response("{}", { status: 400 }))) as unknown as typeof fetch;
+  const client = new CountingClient();
+  const rt = instance(db, { client, fetchImpl });
+  const r = await approvedRequest(rt);
+  const first = await rt.service.commitApproved(alice, r.id, "first-key-01");
+  await rt.tokens.set("alice", { accessToken: "old", refreshToken: "rt-dead", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  assert.deepEqual(await rt.service.commitApproved(alice, r.id, "retry-key-01"), first);
+  assert.equal(tokenCalls, 0, "no refresh for a replay");
+  assert.ok(await rt.tokens.get("alice"), "replay did not unlink the user");
+  await rt.tokens.delete("alice");
+  const s = cmdBody(`submit ${r.id}`);
+  assert.match(text(await rt.route("POST", "/slack/commands", s, signed(s))), /Submitted to Workday/);
+  assert.equal(client.submits, 1);
+  assert.equal(tokenCalls, 0);
+});
+
+await check("commit ownership before tokens: non-requester denied without a token fetch; revoked role or other tenant cannot read a stored result", async () => {
+  const db = await seeded();
+  let tokenCalls = 0;
+  const fetchImpl = (async () => (tokenCalls++, new Response("{}", { status: 400 }))) as unknown as typeof fetch;
+  const client = new CountingClient();
+  const rt = instance(db, { client, fetchImpl });
+  const mallory = { tenantId: "acme", userId: "mallory" };
+  await rt.tokens.set("mallory", { accessToken: "old", refreshToken: "rt-m", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  const pending = await approvedRequest(rt);
+  await assert.rejects(rt.service.commitApproved(mallory, pending.id, "mallory-key-1"), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  assert.equal(tokenCalls, 0, "no token work for a non-requester");
+  assert.ok(await rt.tokens.get("mallory"), "non-requester's token untouched");
+  await rt.service.commitApproved(alice, pending.id, "alice-key-001");
+  await assert.rejects(rt.service.commitApproved(mallory, pending.id, "mallory-key-2"), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"], denies: ["tool:commit_request_time_off"] });
+  await assert.rejects(rt.service.commitApproved(alice, pending.id, "alice-key-002"), /denied|not allowed|deny/i);
+  await assert.rejects(rt.backend.beginCommit({ requestId: pending.id, caller: alice, authz: await rt.entitlements.authzFor(alice), idempotencyKey: "alice-key-003" }), /denied|not allowed|deny/i);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"] });
+  await assert.rejects(rt.service.commitApproved({ tenantId: "other", userId: "alice" }, pending.id, "alice-key-004"), (e: Error & { code?: string }) => e.code === "CROSS_TENANT");
+  await assert.rejects(rt.backend.lookupCommit({ requestId: pending.id, caller: { tenantId: "other", userId: "alice" }, authz: await rt.entitlements.authzFor(alice) }), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  assert.equal(tokenCalls, 0);
+  assert.equal(client.submits, 1);
 });
 
 for (const db of dbs) await db.close().catch(() => {});
