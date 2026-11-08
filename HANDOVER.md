@@ -26,3 +26,6 @@
 
 ## Branch state (2026-11-08)
 `origin/main` is at `4bf10b2`. `security/oss-hardening` descends from it and adds the OSS hardening commits. Nothing is merged and there is no PR. No earlier history is missing.
+
+## Agent Gateway alignment (2026-11-08)
+`src/agent-gateway/` holds the same ASU, discovery and policy modules as the focused repos, with checks in `pnpm check:agent-gateway`. The Slack/HTTP runtime still uses the legacy direct REST time-off integration, which is labelled as such. Wiring Agent Gateway into this runtime is not done.

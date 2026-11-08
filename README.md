@@ -158,3 +158,13 @@ Production runtime: Postgres state, admin-invited account linking through Workda
 ## License
 
 MIT
+
+## Workday Agent-Ready MCP vs. direct Workday APIs
+
+Workday's public docs (read 2026-11-08) say Agent-Ready MCP tools are reached at `https://{agentGatewayRegionEndpoint}/{tenantName}/mcp`. Access needs ASOR registration and ASU OAuth 2.1 with PKCE. The tools are discovered at runtime, change without versioning, and are "for AI agent use only, not for hard-coded integrations". Sources: [Agent-Ready MCP Tools](https://developer.workday.com/documentation/GUID-949559e7-10c3-438a-abb2-e452c23d9da8-enHYPHENus/AgentReadyMCPTools), [Connect an External Agent](https://developer.workday.com/documentation/GUID-03605c39-71d3-4314-bf71-97f274df457c-enHYPHENus/ConnectanExternalAgentwithWorkdayMCP), [Developer Guidelines & Change Policy](https://developer.workday.com/documentation/GUID-04498a6d-10ba-4a41-a917-9fa668641b8d-enHYPHENus/WorkdayAgentReadyMCPToolsDeveloperGuidelinesChangePolicy), [Discover tools](https://developer.workday.com/documentation/GUID-f86470b2-4283-48e6-8d7e-18c91c470878-enHYPHENus).
+
+In this repository:
+- **Legacy direct integration:** the time-off flow (`src/workday/client.ts`, Workday REST absenceManagement, tenant OAuth in `src/auth/oauth.ts`). It is a standard API integration. It is not an Agent-Ready MCP path and does not use ASU tokens.
+- **Agent-Ready catalog (`src/agent-ready/`):** reference stubs from public docs. Nothing here calls them.
+- **Agent Gateway runtime (`src/agent-gateway/`):** ASU delegate OAuth with PKCE and the documented authorize and token endpoints; runtime discovery (paginated, list_changed and TTL refresh, contract fingerprints); an approved tool policy with server-side subject binding; and a commit-time drift check. CLIs: `pnpm asu:login` and `pnpm agent-tools:snapshot` (read only). Tests: `pnpm check:agent-gateway`. It is not wired into the Slack/HTTP runtime yet. The focused projects (internal-people-agent, performance-review-cycle-helper) expose it as `workday_*` agent tools.
+- **Operator steps in Workday:** ASOR setup, agent registration, configuration and activation, and skill security policies. Not yet run against a live tenant.

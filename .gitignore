@@ -39,3 +39,7 @@ coverage/
 
 # Test fixtures with live PII (keep scrubbed fixtures under src/**/fixtures)
 **/live-fixtures/
+
+*.session.json
+asu-session*.json
+agent-tool-policy.json
