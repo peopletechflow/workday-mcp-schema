@@ -65,4 +65,4 @@ set -a; . "$WD/local.env"; set +a
 ```
 Postgres.app's default `pg_hba.conf` trusts local connections, so the passwords are not enforced by that server; they matter once the same config points at a server that requires them. The app role's limits (no DDL) hold either way because they are grants, not authentication.
 
-To use it from a built checkout: `set -a; . "$HOME/Library/Application Support/workday-mcp/local.env"; set +a; pnpm db:status`.
+In a checkout, put `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `TOKEN_ENCRYPTION_KEY` and `TOKEN_ENCRYPTION_KEY_ID` in `.env.local` (gitignored); `pnpm dev:serve` and `pnpm admin ...` load it outside production. Without a checkout: `set -a; . "$HOME/Library/Application Support/workday-mcp/local.env"; set +a; pnpm db:status`.

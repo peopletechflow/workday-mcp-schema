@@ -5,8 +5,12 @@ import { migrate, migrationStatus } from "../store/migrations.js";
 import { pruneExpired } from "../store/repos.js";
 import { createHttpServer } from "../integrations/http.js";
 import { buildRuntime, loadRuntimeConfig } from "./runtime.js";
+import { loadLocalEnv } from "../env/local-env.js";
 
 async function main(): Promise<void> {
+  // Local dev only (skipped when NODE_ENV=production); process env always wins.
+  const local = loadLocalEnv();
+  if (local.loaded) process.stderr.write(`${JSON.stringify({ evt: "local_env_loaded", file: ".env.local", keys: local.keys.length })}\n`);
   const cfg = loadRuntimeConfig();
   const db = createPgDb(cfg.databaseUrl);
   if (cfg.migrateOnStart) await migrate(db);

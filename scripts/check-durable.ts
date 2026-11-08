@@ -17,6 +17,10 @@ import { durableAccessTokens, LinkRequiredError, TokenRefreshUnavailableError } 
 import { buildIntegrationToolset } from "../src/ai/integration-agent.js";
 import type { TimeOffRequestInput, TimeOffRequestResult } from "../src/workday/types.js";
 import { testDb } from "./lib/test-db.js";
+import { loadLocalEnv } from "../src/env/local-env.js";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BackgroundTasks } from "../src/integrations/background.js";
 import { KEY, RESPONSE_URL, SECRET, TEAM, baseEnv, button, cmdBody, fakeSlack, instance, seed, signed, slackText, submission, submitButton, type Instance } from "./lib/harness.js";
 
@@ -732,6 +736,31 @@ await check("commit ownership before tokens: non-requester denied without a toke
   await assert.rejects(rt.backend.lookupCommit({ requestId: pending.id, caller: { tenantId: "other", userId: "alice" }, authz: await rt.entitlements.authzFor(alice) }), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
   assert.equal(tokenCalls, 0);
   assert.equal(client.submits, 1);
+});
+
+await check("local env: .env.local fills only unset vars; process env wins; production and SKIP_LOCAL_ENV skip it; missing keys still fail", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wd-env-"));
+  writeFileSync(join(dir, ".env.local"), "DATABASE_URL=postgres://from-file\nTOKEN_ENCRYPTION_KEY_ID=kfile\n# comment\nQUOTED=\"a b\"\n", { mode: 0o600 });
+  const env: NodeJS.ProcessEnv = { DATABASE_URL: "postgres://from-process" };
+  const r = loadLocalEnv(env, dir);
+  assert.equal(r.loaded, true);
+  assert.equal(env.DATABASE_URL, "postgres://from-process", "process env wins");
+  assert.equal(env.TOKEN_ENCRYPTION_KEY_ID, "kfile");
+  assert.equal(env.QUOTED, "a b");
+  assert.deepEqual(r.keys.sort(), ["QUOTED", "TOKEN_ENCRYPTION_KEY_ID"]);
+  const prod: NodeJS.ProcessEnv = { NODE_ENV: "production" };
+  assert.equal(loadLocalEnv(prod, dir).skipped, "production");
+  assert.equal(prod.TOKEN_ENCRYPTION_KEY_ID, undefined, "production never reads .env.local");
+  const off: NodeJS.ProcessEnv = { SKIP_LOCAL_ENV: "true" };
+  assert.equal(loadLocalEnv(off, dir).skipped, "disabled");
+  assert.equal(off.DATABASE_URL, undefined);
+  const none: NodeJS.ProcessEnv = {};
+  assert.deepEqual(loadLocalEnv(none, join(dir, "missing")).keys, [], "missing file is fine");
+  // The file had no TOKEN_ENCRYPTION_KEY: validation still refuses (no default key).
+  const partial: NodeJS.ProcessEnv = { WORKDAY_USE_FIXTURES: "true", WORKDAY_TENANT: "acme" };
+  loadLocalEnv(partial, dir);
+  assert.throws(() => loadRuntimeConfig(partial), /TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_ID are required/);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 for (const db of dbs) await db.close().catch(() => {});

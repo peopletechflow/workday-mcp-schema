@@ -19,6 +19,7 @@ import { migrate, migrationStatus, schemaVersion, LATEST_SCHEMA_VERSION } from "
 import { seedDev, SEED_TABLES } from "../store/seed.js";
 import { buildRuntime, loadRuntimeConfig } from "../server/runtime.js";
 import { parseTypeMap } from "../integrations/approvals/execution.js";
+import { loadLocalEnv } from "../env/local-env.js";
 
 function flags(argv: string[]): Record<string, string | true> {
   const out: Record<string, string | true> = {};
@@ -113,6 +114,7 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
 }
 
 if (process.argv[1] && /admin\.(js|ts)$/.test(process.argv[1])) {
+  loadLocalEnv(); // local dev only; process env wins; skipped when NODE_ENV=production
   runAdmin(process.argv.slice(2)).catch((e) => {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(1);

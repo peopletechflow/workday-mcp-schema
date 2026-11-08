@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added (local env loading)
+- `src/env/local-env.ts`: the HTTP runtime and admin CLI load `.env.local` from the working directory (override `LOCAL_ENV_FILE`) with `node:util` `parseEnv`, no new dependency. Process environment always wins; skipped when `NODE_ENV=production` or `SKIP_LOCAL_ENV=true`; a missing file is fine. Required-key validation (database URL, token encryption key) is unchanged. `check:durable` covers precedence, production skip, opt-out, missing file, and missing keys.
+
 ### Added (database migrations, roles, dev seed)
 - Versioned migration workflow (docs/DATABASE.md): ledger `schema_migrations` gains a sha256 `checksum`; drift (changed SQL for an applied version), gaps and a database newer than the code are refused; ledgers from before checksums are upgraded in place. Each migration runs in its own transaction under the advisory lock. No automatic down migrations (rollback = backup restore or a new forward version).
 - Migration 2 `expiry_indexes` (form_sessions / oauth_states expiry, reconcile index).
