@@ -10,6 +10,8 @@
 - Generated psql artifacts: `db/migrations/*.sql`, `db/psql/migrate.psql` (same ledger, checksums, lock), `db/seed/dev-seed.sql`; `check:migrations` fails when they are stale. Hand-written `db/psql/bootstrap-local.psql` creates a schema owner role and a row-only app role and a locked-down database without touching existing roles or server config.
 - Guarded, idempotent dev seed (`src/store/seed.ts`): allowlisted database names only, refuses when OAuth tokens exist; fictitious `demo-tenant` data with invited-only links and no pending/approved requests, tokens or ledger rows.
 - `check:migrations`: 7 checks on PGlite, 12 on real Postgres (fresh, no-op rerun, drift, failed migration rollback, gaps, newer database, upgrade from the old ledger, concurrent migrators, seed refusal, bootstrap roles, psql runner interop and drift, seed twice with stable counts, app role cannot run DDL).
+- Fixed: the app role could write `schema_migrations` through default privileges. The bootstrap now creates the ledger as the owner first and leaves the app role SELECT only (re-run safe); `check:migrations` asserts ledger writes are refused.
+- Local Mac dev database applied and verified (Postgres.app 18.6, `127.0.0.1:5432/workday_mcp_dev`, roles `workday_mcp_owner` / `workday_mcp_app`, config `~/Library/Application Support/workday-mcp/local.env`).
 - Fixed a flaky durable check: identical Slack bodies signed within the same second were (correctly) rejected by the replay guard.
 
 ### Fixed (PR #1 review)

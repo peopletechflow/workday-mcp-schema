@@ -171,7 +171,8 @@ if (url && psqlAvailable()) {
       await ownerDb.close();
     });
 
-    await check("app role: row reads/writes allowed; DDL, migrations and the ledger change refused", async () => {
+    psql(adminPostgres.toString(), ["-v", `db=${dbName}`, "-v", `owner=${owner}`, "-v", `app=${app}`, "-v", `owner_pw_file=${join(dir, "owner.pw")}`, "-v", `app_pw_file=${join(dir, "app.pw")}`, "-f", "db/psql/bootstrap-local.psql"]);
+    await check("app role: row reads/writes allowed; DDL, migrations and ledger writes refused (also after a bootstrap re-run)", async () => {
       const appDb = createPgDb(asRole(app, appPw), { max: 1 });
       assert.equal((await appDb.query("SELECT count(*) FROM approval_requests")).rows.length, 1);
       await appDb.query("INSERT INTO slack_replay (key, expires_at) VALUES ('app-role-check', now())");
@@ -179,6 +180,9 @@ if (url && psqlAvailable()) {
       await assert.rejects(appDb.query("CREATE TABLE app_should_not (id int)"), /permission denied/);
       await assert.rejects(appDb.query("DROP TABLE approval_requests"), /must be owner|permission denied/);
       await assert.rejects(migrate(appDb, [...MIGRATIONS, { version: LATEST_SCHEMA_VERSION + 1, name: "x", sql: "CREATE TABLE x (id int)" }]), /permission denied/);
+      await assert.rejects(appDb.query("INSERT INTO schema_migrations (version, name) VALUES (99, 'x')"), /permission denied/);
+      await assert.rejects(appDb.query("UPDATE schema_migrations SET checksum = 'x'"), /permission denied/);
+      await assert.rejects(appDb.query("DELETE FROM schema_migrations"), /permission denied/);
       assert.equal((await migrationStatus(appDb)).state, "up_to_date", "app role can read status for readyz");
       await appDb.close();
     });

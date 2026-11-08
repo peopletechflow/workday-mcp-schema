@@ -34,7 +34,7 @@ psql-only environments use the generated files (no Node needed):
 
 `db/psql/bootstrap-local.psql` (hand-written, idempotent, creates only new objects):
 - `<owner>` (for example `workday_mcp_owner`): owns the database and `public` schema. Used for migrations and the dev seed (`DATABASE_MIGRATION_URL`).
-- `<app>` (for example `workday_mcp_app`): `CONNECT` plus `SELECT/INSERT/UPDATE/DELETE` on tables and sequence usage via default privileges. No DDL, cannot migrate. Used by the runtime (`DATABASE_URL`). It can read `schema_migrations` for `/readyz`.
+- `<app>` (for example `workday_mcp_app`): `CONNECT` plus `SELECT/INSERT/UPDATE/DELETE` on tables and sequence usage via default privileges. No DDL, cannot migrate. Used by the runtime (`DATABASE_URL`). It can only read `schema_migrations` (for `/readyz`): the bootstrap creates the ledger as the owner before default privileges apply, and re-runs revoke any write grant on it.
 - `PUBLIC` loses all rights on that database and schema. Existing roles, other databases and server settings (`pg_hba.conf`, `postgresql.conf`) are not touched.
 - With least-privilege runtime credentials keep `DB_MIGRATE_ON_START=false`; migrate with the owner credentials.
 

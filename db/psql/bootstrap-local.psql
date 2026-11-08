@@ -46,9 +46,23 @@ GRANT CONNECT ON DATABASE :"db" TO :"app";
 ALTER SCHEMA public OWNER TO :"owner";
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO :"app";
+-- The migration ledger is created by the owner BEFORE default privileges exist, so the app role
+-- never gets write access to it (same DDL as src/store/migrations.ts LEDGER_DDL).
+SET ROLE :"owner";
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version int PRIMARY KEY,
+  name text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  checksum text
+);
+ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum text;
+RESET ROLE;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO :"app";
 -- Tables that already exist (re-run after migrations) get the same row-level grants.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app";
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"app";
+-- Ledger: read-only for the app (status / readyz). Revoked last so re-runs stay correct.
+REVOKE ALL ON schema_migrations FROM :"app";
+GRANT SELECT ON schema_migrations TO :"app";
 \echo bootstrap done for :db
