@@ -14,15 +14,17 @@ Workday's Agent-Ready tools are for agents only. Their names and schemas change 
    - any person field inside an array or union.
    
    Every person field at any depth must be bound to the caller (`caller`, or `me`/`true` for self selectors). Otherwise the tool is unavailable.
-4. **Recursive runtime checks.**
-   - The model may not set a person field at any depth, add unknown fields, or send arrays the schema does not expect.
-   - Opaque string ids are accepted only when they came back in this caller's own earlier Workday results (an ownership proof). Free values such as dates, numbers and enums pass.
-   - The server then sets the bound fields and validates against the live schema (Ajv).
-5. **Writes are off by default.** Write ceilings ship `enabled: false` until a scoped adapter is validated against a tenant. A destructive tool, or one annotated `readOnlyHint: false`, is never mapped to a read. A destructive tool is never mapped to a write without `allowDestructive` on that exact ceiling. When writes are enabled they keep the existing safety steps:
+4. **No record-id inputs, no free text.**
+   - Workday does not document which output fields are records the signed-in worker owns. A self read can return a manager's or colleague's id (for example `manager.id`), so ownership cannot be inferred from results. No ownership is assumed, and the operator policy cannot declare it either.
+   - A tool whose schema takes an id-like field is unavailable. Fields count as id-like by name (`*Id`, `*Wid`, `*Ref`, `*Reference`, `*Key`, `*Descriptor`, and so on) for any scalar type, including numbers. Free-form strings make a tool unavailable too, because they could carry another person's id.
+   - Model-supplied values are limited to enums, consts, dates and date-times (the format is checked by this code, not left to Ajv), and non-id numbers or booleans. Unknown fields, nested person fields and unexpected arrays are rejected at any depth. The server then sets the bound fields and validates against the live schema.
+   - By-id capabilities stay unavailable until a real, tenant-verified contract says which output path is the caller's own record for which capability. That would be a code change to the ceilings, with tests, not an operator setting.
+5. **Writes are off by default.** Write ceilings ship `enabled: false` until a scoped adapter is validated against a tenant. A read capability needs the live tool annotated `readOnlyHint: true` and not `destructiveHint: true`; missing or empty annotations make it unavailable. A destructive tool is never mapped to a write without `allowDestructive` on that exact ceiling. When writes are enabled they keep the existing safety steps:
    - an exact preview, a fingerprint and explicit confirmation;
    - a fingerprint re-check right before commit, so contract drift sends nothing;
    - commit-once with idempotency keys and durable unknown outcomes.
-6. **Defence in depth.** A normalized denylist of known manager, HR and payroll tools is kept. It is not the boundary.
+6. **Defence in depth.** A normalized denylist of known manager, HR and payroll tools, plus a name pattern for business-process decisions (approve, deny, send back, advance, rescind, cancel, reassign and so on) and HR changes (initiate change job, termination, hire, compensation, payroll). These are backups. The capability ceilings and annotations are the real gates.
+7. **Policy file hygiene.** Duplicate tool names (compared case- and punctuation-insensitively) are rejected when the policy loads.
 
 ## Identity
 - Exactly one policy entry may use `identity.self`. Its only inputs must be self selectors (`me`/`true`), it must carry `attestedBy`/`attestedAt`, and its `workerIdPath` must select exactly one record (`data[].id` means "the array must have exactly one element"). Numeric indexes such as `data.0.id` are rejected. Search results are never used.

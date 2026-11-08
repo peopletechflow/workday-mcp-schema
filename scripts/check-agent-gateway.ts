@@ -25,17 +25,19 @@ async function upstream(w: World) {
 }
 const obj = (props: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ type: "object", properties: props, additionalProperties: false, ...extra });
 const T = (name: string, schema: Record<string, unknown>, extra: Partial<UpstreamTool> = {}): UpstreamTool => ({ name, description: `d ${name}`, inputSchema: schema as never, ...extra });
+const RO = { annotations: { readOnlyHint: true } };
 const CEIL: Ceiling[] = [
+  { capability: "worker.self.read", access: "read", permission: "rc.read", description: "worker", enabled: true },
   { capability: "goals.self.read", access: "read", permission: "rc.read", description: "goals", enabled: true },
   { capability: "goal.self.update", access: "write", permission: "rc.submit", description: "update goal", enabled: true },
   { capability: "payroll.write", access: "write", permission: "rc.submit", description: "never", enabled: false },
 ];
 const base = () => [
-  T("whoAmI", obj({ contextInstanceId: { type: "string" } })),
-  ...Array.from({ length: 7 }, (_, i) => T(`filler${i}`, obj({}))),
-  T("getMyGoals", obj({ workerId: { type: "string" }, from: { type: "string", format: "date" } }), { annotations: { readOnlyHint: true } }),
-  T("goalStatus", obj({ workerId: { type: "string" }, goalId: { type: "string" } })),
-  T("updateMyGoal", obj({ workerId: { type: "string" }, goalId: { type: "string" }, percent: { type: "number" } })),
+  T("whoAmI", obj({ contextInstanceId: { type: "string" } }), RO),
+  ...Array.from({ length: 7 }, (_, i) => T(`filler${i}`, obj({}), RO)),
+  T("getMyGoals", obj({ workerId: { type: "string" }, from: { type: "string", format: "date" } }), RO),
+  T("goalStatus", obj({ workerId: { type: "string" }, goalId: { type: "string" } }), RO),
+  T("updateMyGoal", obj({ workerId: { type: "string" }, percent: { type: "number" } })),
 ];
 type E = ToolPolicy["tools"][number];
 function policy(ts: UpstreamTool[], extra: Partial<E>[] = [], replaceIdentity?: Partial<E>): ToolPolicy {
@@ -57,7 +59,7 @@ test("paginated discovery, attested self identity, top-level subject bound serve
   const { up, r } = await reg(w);
   assert.equal(await r.resolveWorkerId(), "W-ME");
   assert.deepEqual(w.calls.at(-1), { name: "whoAmI", args: { contextInstanceId: "me" } });
-  assert.ok(r.statuses().every((s) => s.status === "available"), JSON.stringify(r.statuses()));
+  assert.ok(r.statuses().filter((s) => s.name !== "goalStatus").every((s) => s.status === "available"), JSON.stringify(r.statuses()));
   await r.read("getMyGoals", "goals.self.read", { from: "2026-01-01" }, "W-ME", "k");
   assert.deepEqual(w.calls.at(-1)!.args, { from: "2026-01-01", workerId: "W-ME" });
   await assert.rejects(r.read("getMyGoals", "goals.self.read", { workerId: "BOB" }, "W-ME", "k"), /set by the server/);
@@ -66,7 +68,7 @@ test("paginated discovery, attested self identity, top-level subject bound serve
 });
 
 test("nested person field: unbound is refused; bound is filled; model injection at depth is rejected", async () => {
-  const nested = T("searchGoals", obj({ contextInstanceId: { type: "string" }, filter: obj({ worker: { type: "string" }, from: { type: "string", format: "date" } }) }));
+  const nested = T("searchGoals", obj({ contextInstanceId: { type: "string" }, filter: obj({ worker: { type: "string" }, from: { type: "string", format: "date" } }) }), RO);
   const w: World = { tools: [...base(), nested], calls: [], pageSize: 50 };
   let x = await reg(w, policy(w.tools, [{ name: "searchGoals", capability: "goals.self.read", subject: { contextInstanceId: "me" } }]));
   await x.r.ensureFresh(); assert.match(st(x.r, "searchGoals").reason!, /without a server binding: filter\.worker/); await x.up.close();
@@ -74,6 +76,7 @@ test("nested person field: unbound is refused; bound is filled; model injection 
   await x.r.ensureFresh(); assert.equal(st(x.r, "searchGoals").status, "available");
   await assert.rejects(x.r.read("searchGoals", "goals.self.read", { filter: { worker: "BOB_WID" } }, "W-ME", "k"), /person fields are set by the server/);
   await assert.rejects(x.r.read("searchGoals", "goals.self.read", { filter: { surprise: "x" } }, "W-ME", "k"), /unknown field/);
+  await assert.rejects(x.r.read("searchGoals", "goals.self.read", { filter: { from: "BOB_WID" } }, "W-ME", "k"), /only enum, const, or date/);
   await x.r.read("searchGoals", "goals.self.read", { filter: { from: "2026-01-01" } }, "W-ME", "k");
   assert.deepEqual(w.calls.at(-1)!.args, { filter: { from: "2026-01-01", worker: "W-ME" }, contextInstanceId: "me" });
   await x.up.close();
@@ -92,7 +95,7 @@ test("schemas that cannot be bound safely are refused: arrays, unions, open obje
 });
 
 test("$ref alias to a person field must be bound and cannot be injected", async () => {
-  const t = T("refTool", { ...obj({ who: { $ref: "#/$defs/P" } }), $defs: { P: obj({ employee: { type: "string" } }) } });
+  const t = T("refTool", { ...obj({ who: { $ref: "#/$defs/P" } }), $defs: { P: obj({ employee: { type: "string" } }) } }, RO);
   const w: World = { tools: [...base(), t], calls: [], pageSize: 50 };
   const x = await reg(w, policy(w.tools, [{ name: "refTool", capability: "goals.self.read", subject: { "who.employee": "caller" } }]));
   await x.r.ensureFresh(); assert.equal(st(x.r, "refTool").status, "available");
@@ -100,26 +103,67 @@ test("$ref alias to a person field must be bound and cannot be injected", async 
   await x.up.close();
 });
 
-test("opaque ids need ownership proof: only values from your own earlier results", async () => {
-  const w: World = { tools: base(), calls: [], pageSize: 50, results: { getMyGoals: { goals: [{ id: "G-MINE" }] } } };
-  const { up, r } = await reg(w);
-  await assert.rejects(r.read("goalStatus", "goals.self.read", { goalId: "G-SOMEONE" }, "W-ME", "k"), /id not from your own records/);
-  await r.read("getMyGoals", "goals.self.read", {}, "W-ME", "k");
-  await r.read("goalStatus", "goals.self.read", { goalId: "G-MINE" }, "W-ME", "k");
-  await assert.rejects(r.read("goalStatus", "goals.self.read", { goalId: "G-MINE" }, "W-ME", "other-caller"), /own records/);
-  await up.close();
+test("record-id inputs are unavailable: no ownership is inferred from results, for any capability or scalar type", async () => {
+  const mal = T("getMyReviewSummary", obj({ workerId: { type: "string" } }), RO);
+  const byNum = T("getGoalByNumber", obj({ workerId: { type: "string" }, goalNumberId: { type: "integer" } }), RO);
+  const byRef = T("getReviewByRef", obj({ workerId: { type: "string" }, review: obj({ recordRef: { type: "number" } }) }), RO);
+  const text = T("searchMyGoals", obj({ workerId: { type: "string" }, query: { type: "string" } }), RO);
+  const w: World = { tools: [...base(), mal, byNum, byRef, text], calls: [], pageSize: 50, results: { getMyReviewSummary: { manager: { ref: "BOB_WID", id: "BOB_WID" }, items: [{ id: 42 }] } } };
+  const x = await reg(w, policy(w.tools, [
+    { name: "getMyReviewSummary", capability: "worker.self.read", subject: { workerId: "caller" } },
+    { name: "getGoalByNumber", capability: "goals.self.read", subject: { workerId: "caller" } },
+    { name: "getReviewByRef", capability: "goals.self.read", subject: { workerId: "caller" } },
+    { name: "searchMyGoals", capability: "goals.self.read", subject: { workerId: "caller" } },
+  ]));
+  await x.r.ensureFresh();
+  // A safe self read that returns a manager's id grants nothing.
+  await x.r.read("getMyReviewSummary", "worker.self.read", {}, "W-ME", "k");
+  for (const n of ["goalStatus", "getGoalByNumber", "getReviewByRef"]) assert.match(st(x.r, n).reason!, /record-id input/, n);
+  assert.match(st(x.r, "searchMyGoals").reason!, /free-form string/);
+  // Cross-capability laundering: the id cannot be sent anywhere, by string or number.
+  await assert.rejects(x.r.read("goalStatus", "goals.self.read", { goalId: "BOB_WID" }, "W-ME", "k"), /unavailable/);
+  await assert.rejects(x.r.read("getGoalByNumber", "goals.self.read", { goalNumberId: 42 }, "W-ME", "k"), /unavailable/);
+  await assert.rejects(x.r.read("getMyGoals", "goals.self.read", { from: "2026-01-01", managerId: "BOB_WID" } as never, "W-ME", "k"), /record ids are not accepted|unknown field|person fields/);
+  assert.ok(!w.calls.some((c) => JSON.stringify(c.args).includes("BOB_WID")));
+  await x.up.close();
+});
+
+test("reads need readOnlyHint true and not destructive; missing or false annotations are refused; BP decisions denied", async () => {
+  const w: World = { tools: [...base(),
+    T("deny_business_process_event_step", obj({ workerId: { type: "string" } }), { annotations: {} }),
+    T("sendBackBusinessProcess", obj({ workerId: { type: "string" } }), RO),
+    T("plainNoAnn", obj({ workerId: { type: "string" } })),
+    T("emptyAnn", obj({ workerId: { type: "string" } }), { annotations: {} }),
+    T("roFalse", obj({ workerId: { type: "string" } }), { annotations: { readOnlyHint: false } }),
+    T("roDestructive", obj({ workerId: { type: "string" } }), { annotations: { readOnlyHint: true, destructiveHint: true } }),
+  ], calls: [], pageSize: 50 };
+  const sub = { workerId: "caller" as const };
+  const x = await reg(w, policy(w.tools, ["deny_business_process_event_step", "sendBackBusinessProcess", "plainNoAnn", "emptyAnn", "roFalse", "roDestructive"].map((name) => ({ name, capability: "worker.self.read", subject: sub }))));
+  await x.r.ensureFresh();
+  assert.match(st(x.r, "deny_business_process_event_step").reason!, /never exposed/);
+  assert.match(st(x.r, "sendBackBusinessProcess").reason!, /never exposed/);
+  for (const n of ["plainNoAnn", "emptyAnn", "roFalse", "roDestructive"]) assert.match(st(x.r, n).reason!, /readOnlyHint: true/, n);
+  await x.up.close();
+});
+
+test("duplicate tool names in the policy are rejected on load", () => {
+  const ts = base();
+  assert.throws(() => policy(ts, [{ name: "getMyGoals", capability: "worker.self.read", subject: { workerId: "caller" } }]), /duplicate tool name/);
+  assert.throws(() => policy(ts, [{ name: "get-my-goals", capability: "worker.self.read", subject: { workerId: "caller" } }]), /duplicate tool name/);
 });
 
 test("ceilings: undefined or disabled capabilities, destructive and writing annotations are refused", async () => {
-  const w: World = { tools: [...base(), T("deny_business_process_event_step", obj({ eventId: { type: "string" } })), T("wipe", obj({}), { annotations: { destructiveHint: true } }), T("pay", obj({}))], calls: [], pageSize: 50 };
+  const w: World = { tools: [...base(), T("deny_business_process_event_step", obj({ eventId: { type: "string" } })), T("wipe", obj({}), { annotations: { destructiveHint: true } }), T("pay", obj({})), T("bpManage", obj({}), RO)], calls: [], pageSize: 50 };
   const x = await reg(w, policy(w.tools, [
     { name: "deny_business_process_event_step", capability: "bp.manage" },
+    { name: "bpManage", capability: "bp.manage" },
     { name: "wipe", capability: "goal.self.update" },
     { name: "pay", capability: "payroll.write" },
     { name: "request_payroll_input", capability: "goals.self.read" },
   ]));
   await x.r.ensureFresh();
-  assert.match(st(x.r, "deny_business_process_event_step").reason!, /not defined by this project/);
+  assert.match(st(x.r, "deny_business_process_event_step").reason!, /never exposed/);
+  assert.match(st(x.r, "bpManage").reason!, /not defined by this project/);
   assert.match(st(x.r, "wipe").reason!, /destructive/);
   assert.match(st(x.r, "pay").reason!, /disabled/);
   assert.match(st(x.r, "request_payroll_input").reason!, /payroll/);
@@ -127,7 +171,7 @@ test("ceilings: undefined or disabled capabilities, destructive and writing anno
 });
 
 test("identity must be one attested self lookup returning exactly one record", async () => {
-  const w: World = { tools: [...base(), T("whoAmI2", obj({ contextInstanceId: { type: "string" }, q: { type: "string" } }))], calls: [], pageSize: 50, results: { whoAmI: { data: [{ id: "A" }, { id: "B" }] } } };
+  const w: World = { tools: [...base(), T("whoAmI2", obj({ contextInstanceId: { type: "string" }, q: { type: "integer" } }), RO)], calls: [], pageSize: 50, results: { whoAmI: { data: [{ id: "A" }, { id: "B" }] } } };
   let x = await reg(w);
   await assert.rejects(x.r.resolveWorkerId(), /exactly one record/); await x.up.close();
   x = await reg(w, policy(w.tools, [], { name: "whoAmI2", fingerprint: fingerprint(w.tools.at(-1)!) }));
@@ -135,7 +179,7 @@ test("identity must be one attested self lookup returning exactly one record", a
   x = await reg(w, policy(w.tools, [], { subject: { contextInstanceId: "caller" } as never }));
   await x.r.ensureFresh(); assert.match(st(x.r, "whoAmI").reason!, /exactly one self selector/); await x.up.close();
   assert.throws(() => policy(w.tools, [], { identity: { workerIdPath: "data.0.id", attestedBy: "t", attestedAt: "t" } }));
-  x = await reg(w, policy(w.tools, [{ name: "getMyGoals", capability: "identity.self", subject: { workerId: "caller" } } as never]));
+  x = await reg(w, policy(w.tools, [{ name: "filler0", capability: "identity.self" } as never]));
   await assert.rejects(x.r.resolveWorkerId(), /exactly one identity\.self/); await x.up.close();
 });
 
@@ -154,9 +198,9 @@ test("rename, schema drift and list_changed turn tools off; description rewrites
   const w: World = { tools: base(), calls: [], pageSize: 50 };
   const { s, up, r } = await reg(w, undefined, { ttlMs: 3600_000 });
   await r.ensureFresh();
-  w.tools = w.tools.map((t) => (t.name === "getMyGoals" ? { ...t, name: "listGoalsForMe" } : t.name === "updateMyGoal" ? T("updateMyGoal", obj({ workerId: { type: "string" }, goalId: { type: "string" }, percent: { type: "string" } })) : { ...t, description: "rewritten" }));
+  w.tools = w.tools.map((t) => (t.name === "getMyGoals" ? { ...t, name: "listGoalsForMe" } : t.name === "updateMyGoal" ? T("updateMyGoal", obj({ workerId: { type: "string" }, percent: { type: "integer" } })) : { ...t, description: "rewritten" }));
   await s.sendToolListChanged(); await new Promise((x) => setTimeout(x, 20)); await r.ensureFresh();
-  assert.equal(st(r, "getMyGoals").status, "missing"); assert.equal(st(r, "updateMyGoal").status, "drifted"); assert.equal(st(r, "goalStatus").status, "available");
+  assert.equal(st(r, "getMyGoals").status, "missing"); assert.equal(st(r, "updateMyGoal").status, "drifted"); assert.equal(st(r, "goalStatus").status, "refused");
   assert.ok(!r.statuses().some((x) => x.name === "listGoalsForMe"));
   await up.close();
 });

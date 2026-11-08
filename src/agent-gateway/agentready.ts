@@ -6,13 +6,15 @@
  * tools can be reached, in two layers:
  * 1. Capability ceilings, defined in code per project (for example "goals.self.read"). Each has an access kind, the
  *    project role permission it requires (role denies apply), optional consent, and an enabled flag. Writes are
- *    disabled until a scoped adapter with an ownership proof exists. Operator policy can narrow this, never widen it.
+ *    disabled until a scoped adapter with a tenant-verified ownership contract exists. Operator policy can narrow this, never widen it.
  * 2. The operator tool policy (from ASOR review), which binds a discovered tool to one ceiling with a contract
  *    fingerprint. Runtime discovery decides whether that tool still exists with the same contract.
  * Schemas are analysed recursively. Person fields at any depth must be bound by the server, or the tool is refused.
- * Opaque string ids sent by the model must be values the caller already received from their own self-bound reads
- * (an ownership proof); free values are limited to numbers, booleans, enums and dates.
- * The manager/HR/payroll name list is defence in depth only.
+ * Record-id inputs: no Workday contract states which output fields are records the caller owns, so ownership cannot
+ * be proven from results. Any tool whose schema takes an id-like field (by name, any scalar type) or a free-form string
+ * is unavailable. Model-supplied values are limited to enums, consts, dates, and non-id numbers or booleans.
+ * Reads require the server's annotations readOnlyHint === true and destructiveHint !== true; missing annotations = unavailable.
+ * The manager/HR/payroll and business-process decision name denials are defence in depth only.
  */
 import { createHash } from "node:crypto";
 import * as AjvNs from "ajv";
@@ -32,7 +34,7 @@ export function fingerprint(t: UpstreamTool): string {
 /** Code-defined upper bound for what a policy entry may do. */
 export type Ceiling = {
   capability: string; access: "read" | "write"; permission: string; description: string;
-  /** Off unless a scoped adapter with ownership proof has been validated for this project. */
+  /** Off unless a scoped adapter with a tenant-verified ownership contract has been validated for this project. */
   enabled: boolean;
   /** Consent scope the caller must have granted (store consent), if any. */
   consent?: string;
@@ -63,12 +65,23 @@ export const ToolPolicyFile = z.object({
       attestedBy: z.string().min(1), attestedAt: z.string().min(1),
     }).strict().optional(),
     note: z.string().optional(),
-  }).strict()).max(200),
+  }).strict()).max(200).superRefine((ts, ctx) => {
+    const seen = new Set<string>();
+    for (const t of ts) { const k = norm(t.name); if (seen.has(k)) ctx.addIssue({ code: "custom", message: `duplicate tool name in policy: ${t.name}` }); seen.add(k); }
+  }),
 }).strict();
+
+/** A field name that denotes a record or person reference, whatever its scalar type. */
+export const isIdLike = (k: string) => /(id|ids|wid|wids|ref|refs|reference|references|key|keys|descriptor|token|uri|url)$/.test(norm(k));
+/** Backup name denial for manager-side business-process decisions and HR changes (the ceilings and annotations are the real gates). */
+const DECISION_VERB = "(approve|deny|sendback|advance|rescind|cancel|reassign|delegate|correct|reject|submitfor|skip)";
+const DECISION_OBJ = "(businessprocess|eventstep|inboxtask|bpstep|step)";
+const DENY_PATTERN = new RegExp(`${DECISION_VERB}.*${DECISION_OBJ}|${DECISION_OBJ}.*${DECISION_VERB}|initiate.*(changejob|termination|hire|compensation|performancereview|foremployee|forworker)|payroll|compensation`);
+export const isDeniedName = (name: string) => PROHIBITED_UPSTREAM_TOOLS.map(norm).includes(norm(name)) || DENY_PATTERN.test(norm(name));
 export type ToolPolicy = z.infer<typeof ToolPolicyFile>;
 type Entry = ToolPolicy["tools"][number];
 
-type Leaf = "free" | "opaque";
+type Leaf = "free" | "opaque" | "id";
 type Node = Record<string, unknown>;
 /** Result of recursively analysing a tool's input schema. */
 export type SchemaShape = { problems: string[]; subjectPaths: string[]; leaves: Map<string, Leaf> };
@@ -111,8 +124,11 @@ export function analyzeSchema(root: Node): SchemaShape {
     }
     if (!props && !n.items && !n.anyOf && !n.oneOf && !n.allOf && path) {
       const t = n.type; const free = t === "number" || t === "integer" || t === "boolean" || Array.isArray(n.enum) || "const" in n || (t === "string" && (n.format === "date" || n.format === "date-time"));
+      const name = path.replace(/\[\]/g, "").split(".").at(-1)!;
       if (t === "object") problems.push(`${path}: object without declared properties`);
-      else leaves.set(path, free ? "free" : "opaque");
+      else if (isIdLike(name) && !("const" in n)) { leaves.set(path, "id"); problems.push(`${path}: record-id input (ownership of ids cannot be proven; unavailable)`); }
+      else if (!free) { leaves.set(path, "opaque"); problems.push(`${path}: free-form string input (could carry another person's id; unavailable)`); }
+      else leaves.set(path, "free");
     }
   };
   walk(root, "", { inArray: false, inUnion: false }, new Set());
@@ -127,8 +143,6 @@ export class AgentToolRegistry {
   private stale = true;
   private readonly ajv = new Ajv({ allErrors: false, strict: false });
   private readonly ceilings: Map<string, Ceiling>;
-  /** Ownership proof: string values the caller received from their own self-bound reads. */
-  private readonly owned = new Map<string, Set<string>>();
   /** Set after a token refresh; the next call re-reads identity first. */
   identityRecheck = false;
   private boundWorker?: string;
@@ -143,7 +157,7 @@ export class AgentToolRegistry {
 
   /** Why an entry is unusable, or undefined. Checks the ceiling, annotations and the recursive schema. */
   private problem(e: Entry, live?: UpstreamTool): string | undefined {
-    if (PROHIBITED_UPSTREAM_TOOLS.map(norm).includes(norm(e.name))) return "manager/HR/payroll tool is never exposed";
+    if (isDeniedName(e.name)) return "manager/HR/payroll or business-process decision tool is never exposed";
     const c = this.ceilings.get(e.capability);
     if (!c) return `capability '${e.capability}' is not defined by this project`;
     if (!c.enabled) return `capability '${e.capability}' is disabled in this project (no validated scoped adapter)`;
@@ -155,7 +169,7 @@ export class AgentToolRegistry {
     }
     if (!live) return undefined;
     const ann = live.annotations ?? {};
-    if (c.access === "read" && (ann.readOnlyHint === false || ann.destructiveHint === true)) return "read capability but the server marks the tool as writing";
+    if (c.access === "read" && !(ann.readOnlyHint === true && ann.destructiveHint !== true)) return "read capability needs the server to annotate the tool readOnlyHint: true and not destructive";
     if (ann.destructiveHint === true && !c.allowDestructive) return "destructive tool not authorised for this capability";
     const shape = analyzeSchema((live.inputSchema ?? {}) as Node);
     if (shape.problems.length) return `schema not safely understood: ${shape.problems.slice(0, 3).join("; ")}`;
@@ -188,23 +202,25 @@ export class AgentToolRegistry {
   }
 
   /** Recursively check model-supplied args against the live schema; returns problems. */
-  private checkArgs(v: unknown, raw: Node, path: string, owner: Set<string>, root: Node): string[] {
+  private checkArgs(v: unknown, raw: Node, path: string, root: Node): string[] {
     const n = (() => { let cur = raw; const seen = new Set<string>(); while (typeof cur.$ref === "string" && !seen.has(cur.$ref)) { seen.add(cur.$ref); cur = cur.$ref.slice(2).split("/").reduce<unknown>((o, k) => (o as Node)?.[k], root) as Node; } return cur; })();
-    if (Array.isArray(n.allOf)) { const errs = (n.allOf as Node[]).flatMap((b) => this.checkArgs(v, b, path, owner, root)); if (errs.length) return errs; }
-    for (const k of ["anyOf", "oneOf"] as const) if (Array.isArray(n[k])) { const tries = (n[k] as Node[]).map((b) => this.checkArgs(v, b, path, owner, root)); if (!tries.some((t) => !t.length)) return [`${path || "(root)"}: matches no allowed alternative`]; if (!n.properties && !n.items) return []; }
-    if (Array.isArray(v)) { if (!n.items) return [`${path}: unexpected array`]; return v.flatMap((x, i) => this.checkArgs(x, n.items as Node, `${path}[${i}]`, owner, root)); }
+    if (Array.isArray(n.allOf)) { const errs = (n.allOf as Node[]).flatMap((b) => this.checkArgs(v, b, path, root)); if (errs.length) return errs; }
+    for (const k of ["anyOf", "oneOf"] as const) if (Array.isArray(n[k])) { const tries = (n[k] as Node[]).map((b) => this.checkArgs(v, b, path, root)); if (!tries.some((t) => !t.length)) return [`${path || "(root)"}: matches no allowed alternative`]; if (!n.properties && !n.items) return []; }
+    if (Array.isArray(v)) { if (!n.items) return [`${path}: unexpected array`]; return v.flatMap((x, i) => this.checkArgs(x, n.items as Node, `${path}[${i}]`, root)); }
     if (v && typeof v === "object") {
       const props = (n.properties ?? {}) as Record<string, Node>;
       return Object.entries(v as Node).flatMap(([k, x]) => {
         const p = path ? `${path}.${k}` : k;
         if (isSubjectArg(k)) return [`${p}: person fields are set by the server`];
         if (!(k in props)) return [`${p}: unknown field`];
-        return this.checkArgs(x, props[k]!, p, owner, root);
+        return this.checkArgs(x, props[k]!, p, root);
       });
     }
+    const leaf = path.replace(/\[\d+\]/g, "").split(".").at(-1) ?? "";
+    if (v !== null && typeof v !== "object" && isIdLike(leaf) && !("const" in n)) return [`${path}: record ids are not accepted`];
     if (typeof v === "string") {
-      const free = Array.isArray(n.enum) || "const" in n || n.format === "date" || n.format === "date-time";
-      if (!free && !owner.has(v)) return [`${path}: id not from your own records`];
+      // Formats are checked here, not left to Ajv (which ignores "format" without ajv-formats).
+      if (n.format === "date" ? !/^\d{4}-\d{2}-\d{2}$/.test(v) : n.format === "date-time" ? !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/.test(v) : !(Array.isArray(n.enum) || "const" in n)) return [`${path}: only enum, const, or date values are accepted`];
     }
     return [];
   }
@@ -218,7 +234,7 @@ export class AgentToolRegistry {
   buildArgs(name: string, capability: string, llmArgs: Record<string, unknown>, workerId: string | undefined, callerKey: string) {
     const { e, t } = this.entry(name, capability);
     const schema = (t.inputSchema ?? { type: "object" }) as Node;
-    const errs = this.checkArgs(llmArgs, schema, "", this.owned.get(callerKey) ?? new Set(), schema);
+    const errs = this.checkArgs(llmArgs, schema, "", schema); void callerKey;
     if (errs.length) throw new UpstreamToolError(`Refused arguments for '${name}': ${errs.slice(0, 3).join("; ")}`);
     const args = structuredClone(llmArgs) as Node;
     for (const [p, how] of Object.entries(e.subject)) {
@@ -237,12 +253,6 @@ export class AgentToolRegistry {
     return r.data;
   }
 
-  private remember(callerKey: string, data: unknown) {
-    const s = this.owned.get(callerKey) ?? new Set<string>(); this.owned.set(callerKey, s);
-    const walk = (v: unknown, d: number) => { if (s.size > 5000 || d > 12) return; if (typeof v === "string" && v.length <= 256) s.add(v); else if (Array.isArray(v)) v.forEach((x) => walk(x, d + 1)); else if (v && typeof v === "object") Object.values(v).forEach((x) => walk(x, d + 1)); };
-    walk(data, 0);
-  }
-
   /** Before any call after a token refresh: re-read the self identity and require the same worker. */
   private async recheckIdentity() {
     if (!this.identityRecheck) return;
@@ -255,9 +265,7 @@ export class AgentToolRegistry {
     await this.recheckIdentity();
     await this.ensureFresh();
     const { args } = this.buildArgs(name, capability, llmArgs, workerId, callerKey);
-    const out = await this.call(name, args);
-    this.remember(callerKey, out);
-    return out;
+    return this.call(name, args);
   }
 
   async assertUnchanged(name: string, capability: string, previewFingerprint: string): Promise<void> {
