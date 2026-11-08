@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Admin CLI (audited in admin_audit). Usage: pnpm admin <command> [--flags]
- *   migrate | schema-status | keygen
+ *   migrate | db-status [--json] | schema-status | seed-dev | keygen
+ *     migrate uses DATABASE_MIGRATION_URL (schema owner) when set, else DATABASE_URL.
  *   link-invite --slack-team T.. --slack-user U.. --user-id <id>
  *   link-revoke --slack-team T.. --slack-user U..
  *   roles-set --user-id <id> --roles worker_self[,manager] [--grants tool:x] [--denies tool:y]
@@ -14,7 +15,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { createPgDb } from "../store/db.js";
-import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
+import { migrate, migrationStatus, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
+import { seedDev, SEED_TABLES } from "../store/seed.js";
 import { buildRuntime, loadRuntimeConfig } from "../server/runtime.js";
 import { parseTypeMap } from "../integrations/approvals/execution.js";
 
@@ -46,11 +48,25 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
     print(`TOKEN_ENCRYPTION_KEY_ID=k${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`);
     return;
   }
-  const url = env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is required");
+  const schemaAdmin = cmd === "migrate" || cmd === "seed-dev";
+  const url = (schemaAdmin && env.DATABASE_MIGRATION_URL) || env.DATABASE_URL;
+  if (!url) throw new Error(schemaAdmin ? "DATABASE_MIGRATION_URL or DATABASE_URL is required" : "DATABASE_URL is required");
   const db = createPgDb(url, { max: 2 });
   try {
     if (cmd === "migrate") return print(`applied: [${(await migrate(db)).join(",")}]`);
+    if (cmd === "db-status") {
+      const st = await migrationStatus(db);
+      if (f.json) return print(JSON.stringify(st));
+      print(`schema ${st.current} / latest ${st.latest}: ${st.state}${st.problem ? ` (${st.problem})` : ""}`);
+      for (const m of st.migrations) print(`  ${String(m.version).padStart(4, "0")} ${m.name.padEnd(20)} ${m.status}${m.appliedAt ? ` ${m.appliedAt}` : ""}`);
+      if (st.state !== "up_to_date") process.exitCode = 2;
+      return;
+    }
+    if (cmd === "seed-dev") {
+      await seedDev(db);
+      for (const t of SEED_TABLES) print(`${t}: ${(await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${t}`)).rows[0]!.n}`);
+      return;
+    }
     if (cmd === "schema-status") return print(`schema ${await schemaVersion(db)} / latest ${LATEST_SCHEMA_VERSION}`);
     const cfg = loadRuntimeConfig(env);
     const rt = buildRuntime({ cfg, db, env, log: () => {} });

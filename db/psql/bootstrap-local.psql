@@ -1,0 +1,54 @@
+-- Local development bootstrap (hand-written; run once as a Postgres superuser or a role with
+-- CREATEROLE + CREATEDB). Creates only NEW objects; never drops or alters existing roles/DBs.
+--
+--   psql -X -v ON_ERROR_STOP=1 -d postgres \
+--     -v db=workday_mcp_dev -v owner=workday_mcp_owner -v app=workday_mcp_app \
+--     -v owner_pw_file=/path/owner.pw -v app_pw_file=/path/app.pw \
+--     -f db/psql/bootstrap-local.psql
+--
+-- Passwords are read from owner-only files (never on the command line, never echoed).
+-- Roles: <owner> owns the database and schema (runs migrations and the dev seed);
+--        <app> can connect and read/write rows only (no DDL), via default privileges.
+\set ON_ERROR_STOP on
+\set QUIET on
+\set owner_pw `cat :'owner_pw_file'`
+\set app_pw `cat :'app_pw_file'`
+
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner') AS need_owner \gset
+\if :need_owner
+CREATE ROLE :"owner" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'owner_pw';
+\echo created role :owner
+\else
+\echo role :owner exists, left unchanged
+\endif
+
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app') AS need_app \gset
+\if :need_app
+CREATE ROLE :"app" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'app_pw';
+\echo created role :app
+\else
+\echo role :app exists, left unchanged
+\endif
+
+SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') AS need_db \gset
+\if :need_db
+CREATE DATABASE :"db" OWNER :"owner" ENCODING 'UTF8' TEMPLATE template0;
+\echo created database :db
+\else
+\echo database :db exists, left unchanged
+\endif
+
+\connect :"db"
+-- Only inside the dedicated database: lock it down to the two roles.
+REVOKE ALL ON DATABASE :"db" FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE :"db" TO :"owner";
+GRANT CONNECT ON DATABASE :"db" TO :"app";
+ALTER SCHEMA public OWNER TO :"owner";
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO :"app";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO :"app";
+-- Tables that already exist (re-run after migrations) get the same row-level grants.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"app";
+\echo bootstrap done for :db

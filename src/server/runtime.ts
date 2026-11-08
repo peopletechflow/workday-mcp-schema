@@ -7,7 +7,7 @@ import { loadConfig, workdayClientOptions, type AppConfig } from "../config.js";
 import { loadIntegrationConfig, type IntegrationConfig } from "../integrations/config.js";
 import type { Db } from "../store/db.js";
 import { KeyRing } from "../store/crypto.js";
-import { LATEST_SCHEMA_VERSION, schemaVersion } from "../store/migrations.js";
+import { migrationStatus } from "../store/migrations.js";
 import { DbEntitlements, DbFormSessions, DbIdentityLinks, DbReplayGuard, DbTokenStore } from "../store/repos.js";
 import { DbApprovalBackend } from "../store/approvals.js";
 import { HttpWorkdayClient, ContractNotValidatedError, type WorkdayClient } from "../workday/client.js";
@@ -123,7 +123,7 @@ export function buildRuntime(opts: {
   const slackApi = opts.slackApi ?? (cfg.integrations.slack.botToken ? createHttpSlackApi(cfg.integrations.slack.botToken) : undefined);
   const notifier = new SlackApprovalNotifier({ config: cfg.integrations.slack, api: slackApi, directory: links, commandName: cfg.commandName, log });
   const background = new BackgroundTasks({ log });
-  const ready = async () => (await schemaVersion(db)) >= LATEST_SCHEMA_VERSION;
+  const ready = async () => (await migrationStatus(db)).state === "up_to_date";
   const route = createRouter({
     slack: cfg.integrations.slack,
     identities: links,

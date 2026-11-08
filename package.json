@@ -21,7 +21,11 @@
     "db:migrate": "node dist/cli/admin.js migrate",
     "check:durable": "tsx scripts/check-durable.ts",
     "check:mcp": "tsx scripts/check-mcp.ts",
-    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:durable"
+    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:migrations && pnpm run check:durable",
+    "db:status": "node dist/cli/admin.js db-status",
+    "db:seed:dev": "node dist/cli/admin.js seed-dev",
+    "db:export": "tsx scripts/export-sql.ts",
+    "check:migrations": "tsx scripts/check-migrations.ts && tsx scripts/export-sql.ts --check"
   },
   "engines": {
     "node": ">=18"

@@ -14,7 +14,8 @@ Scope: the HTTP runtime in `src/server/main.ts` (Slack intake, `/workday` comman
 pnpm install --frozen-lockfile && pnpm run build
 pnpm admin keygen            # prints TOKEN_ENCRYPTION_KEY and _ID; store in your secrets manager
 export DATABASE_URL=... TOKEN_ENCRYPTION_KEY=... TOKEN_ENCRYPTION_KEY_ID=... WORKDAY_TENANT=... # see .env.example
-pnpm run db:migrate
+pnpm db:status            # read-only: applied / pending / drift per version
+DATABASE_MIGRATION_URL=... pnpm db:migrate   # schema owner; see docs/DATABASE.md
 pnpm admin policy-set --approvers <approver_user_id>[,<id2>] --actor <you>
 pnpm admin roles-set --user-id <id> --roles worker_self --actor <you>
 pnpm admin link-invite --slack-team T... --slack-user U... --user-id <id> --actor <you>

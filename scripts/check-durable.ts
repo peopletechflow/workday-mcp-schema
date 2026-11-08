@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import type { Db } from "../src/store/db.js";
-import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../src/store/migrations.js";
+import { MIGRATIONS, migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../src/store/migrations.js";
 import { KeyRing } from "../src/store/crypto.js";
 import { DbTokenStore, pruneExpired } from "../src/store/repos.js";
 import { DbApprovalBackend } from "../src/store/approvals.js";
@@ -65,7 +65,7 @@ await check("schema: migrate idempotent; readyz 503 before migrate, 200 after; h
   const rt = instance(db);
   assert.equal((await rt.route("GET", "/healthz", "", {})).status, 200);
   assert.equal((await rt.route("GET", "/readyz", "", {})).status, 503);
-  assert.deepEqual(await migrate(db), [1]);
+  assert.deepEqual(await migrate(db), MIGRATIONS.map((m) => m.version));
   assert.deepEqual(await migrate(db), []);
   assert.equal(await schemaVersion(db), LATEST_SCHEMA_VERSION);
   assert.equal((await rt.route("GET", "/readyz", "", {})).status, 200);
@@ -610,7 +610,7 @@ await check("form ack: slow database acks with a 'submitting' view, finishes in 
   assert.match(JSON.stringify(first.view), /Submitting your request/);
   // The user (or a retry) submits the same form while the first insert is still running.
   const again = submission(nonce, good);
-  const second = await rt.route("POST", "/slack/interactions", again, signed(again));
+  const second = await rt.route("POST", "/slack/interactions", again, signed(again, Math.floor(Date.now() / 1000) - 200));
   assert.equal(await rt.background.drain(), 0);
   const all = await rt.backend.list("acme");
   assert.equal(all.length, 1, "exactly one approval");
@@ -645,7 +645,8 @@ await check("form ack: a late failure is delivered to the requester, not lost; t
   await rt.backend.setPolicy("ops", { tenantId: "acme", commitTool: "commit_request_time_off", approverUserIds: ["mgr"] });
   const fast = instance(base, { slackApi: slack.api });
   const ok = submission(nonce, good);
-  assert.equal(JSON.parse((await fast.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear", "same form usable after the failure");
+  // Same body as the first submit: use a distinct timestamp so the replay guard does not (correctly) reject it.
+  assert.equal(JSON.parse((await fast.route("POST", "/slack/interactions", ok, signed(ok, Math.floor(Date.now() / 1000) - 200))).body).response_action, "clear", "same form usable after the failure");
 });
 
 await check("form ack: a database failure after the nonce claim rolls the claim back; retry creates exactly one approval", async () => {
@@ -658,7 +659,7 @@ await check("form ack: a database failure after the nonce claim rolls the claim 
   await assert.rejects(rt.route("POST", "/slack/interactions", vs, signed(vs)), /injected database failure/);
   assert.equal((await rt.backend.list("acme")).length, 0);
   const retry = submission(nonce, good);
-  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", retry, signed(retry))).body).response_action, "clear");
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", retry, signed(retry, Math.floor(Date.now() / 1000) - 200))).body).response_action, "clear");
   assert.equal((await rt.backend.list("acme")).length, 1);
 });
 

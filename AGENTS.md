@@ -5,6 +5,7 @@ Short on purpose: this file is loaded into every agent session. Details live in 
 ## Build and check
 - Package manager: pnpm (`pnpm-lock.yaml`; `packageManager` in package.json pins the version for corepack). Never add `package-lock.json`.
 - `pnpm run check` = typecheck, check:rbac, check:mcp, check:integrations, check:durable (PGlite). `CHECK_DATABASE_URL=...` runs check:durable on real Postgres. Run it before every commit.
+- Schema changes: add a new numbered migration in `src/store/migrations.ts` (never edit an applied one), then `pnpm db:export`. Details: docs/DATABASE.md.
 - Docs: no em dashes. Update CHANGELOG.md and HANDOVER.md with every change.
 
 ## Two runtimes

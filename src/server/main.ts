@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Integration runtime entrypoint: `pnpm run serve` (after `pnpm run build`). */
 import { createPgDb } from "../store/db.js";
-import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
+import { migrate, migrationStatus } from "../store/migrations.js";
 import { pruneExpired } from "../store/repos.js";
 import { createHttpServer } from "../integrations/http.js";
 import { buildRuntime, loadRuntimeConfig } from "./runtime.js";
@@ -10,8 +10,8 @@ async function main(): Promise<void> {
   const cfg = loadRuntimeConfig();
   const db = createPgDb(cfg.databaseUrl);
   if (cfg.migrateOnStart) await migrate(db);
-  const v = await schemaVersion(db).catch(() => 0);
-  if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: pnpm run db:migrate`);
+  const st = await migrationStatus(db);
+  if (st.state !== "up_to_date") throw new Error(`Database schema ${st.current} / ${st.latest}: ${st.state}${st.problem ? ` (${st.problem})` : ""}. Run: pnpm db:status, then pnpm db:migrate`);
   const rt = buildRuntime({ cfg, db });
   const server = createHttpServer(rt.route, { maxBodyBytes: cfg.integrations.slack.maxBodyBytes, log: rt.log });
   const prune = setInterval(() => void pruneExpired(db).catch(() => {}), 60_000);

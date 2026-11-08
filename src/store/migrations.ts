@@ -1,7 +1,22 @@
-/** Forward-only schema migrations. Applied by `pnpm run db:migrate` (or at boot with DB_MIGRATE_ON_START=true). */
-import type { Db } from "./db.js";
+/**
+ * Forward-only, versioned schema migrations (docs/DATABASE.md).
+ *
+ * - Ordered integer versions; each migration runs in its own transaction under a shared
+ *   advisory lock, so concurrent migrators (several app instances, CLI + boot) serialize.
+ * - The ledger `schema_migrations` stores name and a sha256 checksum of the SQL. A changed
+ *   SQL text for an applied version is drift and stops `migrate` (fix forward with a new
+ *   version instead). Ledgers written before checksums existed are backfilled once.
+ * - A database with versions newer than this code is refused (no silent downgrade).
+ * - No automatic down migrations. Rollback = restore a backup or ship a new forward version.
+ * - The same SQL is exported to db/migrations/*.sql and db/psql/migrate.psql
+ *   (`pnpm db:export`) for environments that apply migrations with psql only.
+ */
+import { createHash } from "node:crypto";
+import type { Db, Queryable } from "./db.js";
 
-export const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
+export type Migration = { version: number; name: string; sql: string };
+
+export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: "init",
@@ -123,27 +138,128 @@ CREATE TABLE IF NOT EXISTS admin_audit (
 );
 `,
   },
+  {
+    version: 2,
+    name: "expiry_indexes",
+    sql: `
+CREATE INDEX IF NOT EXISTS form_sessions_exp ON form_sessions (expires_at);
+CREATE INDEX IF NOT EXISTS oauth_states_exp ON oauth_states (expires_at);
+CREATE INDEX IF NOT EXISTS approval_requests_reconcile ON approval_requests (status, updated_at) WHERE status IN ('committing','unknown');
+`,
+  },
 ];
 
-export async function migrate(db: Db): Promise<number[]> {
-  await db.query("CREATE TABLE IF NOT EXISTS schema_migrations (version int PRIMARY KEY, name text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
+export const MIGRATION_LOCK_KEY = 727274001;
+export const LATEST_SCHEMA_VERSION = Math.max(...MIGRATIONS.map((m) => m.version));
+
+export const checksumOf = (sql: string): string => createHash("sha256").update(sql, "utf8").digest("hex");
+
+export class MigrationError extends Error {
+  constructor(readonly code: "DRIFT" | "AHEAD" | "ORDER", message: string) {
+    super(message);
+    this.name = "MigrationError";
+  }
+}
+
+export const LEDGER_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (
+  version int PRIMARY KEY,
+  name text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  checksum text
+);
+ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum text;`;
+
+function assertOrdered(list: readonly Migration[]): void {
+  list.forEach((m, i) => {
+    if (m.version !== i + 1) throw new MigrationError("ORDER", `Migrations must be numbered 1..n without gaps (found ${m.version} at position ${i + 1}).`);
+  });
+}
+
+type LedgerRow = { version: number; name: string; checksum: string | null; applied_at: unknown };
+
+async function ledger(q: Queryable): Promise<LedgerRow[]> {
+  const r = await q.query<LedgerRow>("SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version");
+  return r.rows.map((x) => ({ ...x, version: Number(x.version) }));
+}
+
+function checkLedger(rows: LedgerRow[], list: readonly Migration[]): void {
+  const latest = list.length;
+  const ahead = rows.filter((r) => r.version > latest);
+  if (ahead.length) throw new MigrationError("AHEAD", `Database has migration(s) ${ahead.map((r) => r.version).join(",")} newer than this code (latest ${latest}). Deploy the newer code; never downgrade the schema.`);
+  for (const r of rows) {
+    const m = list[r.version - 1]!;
+    if (r.checksum !== null && r.checksum !== checksumOf(m.sql)) {
+      throw new MigrationError("DRIFT", `Migration ${r.version} (${m.name}) changed after it was applied (checksum mismatch). Restore the original SQL and add a new forward migration.`);
+    }
+  }
+}
+
+/**
+ * Apply pending migrations. Returns the versions applied by this call ([] when up to date).
+ * Throws MigrationError on drift, a newer database, or a malformed list; a failing migration
+ * rolls back completely and leaves the ledger unchanged.
+ */
+export async function migrate(db: Db, list: readonly Migration[] = MIGRATIONS): Promise<number[]> {
+  assertOrdered(list);
+  await db.tx(async (q) => {
+    await q.query(`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`);
+    await q.query(LEDGER_DDL);
+    const rows = await ledger(q);
+    checkLedger(rows, list);
+    // Ledgers from before checksums: record the current checksum once (trust on first upgrade).
+    for (const r of rows) if (r.checksum === null) await q.query("UPDATE schema_migrations SET checksum = $2 WHERE version = $1 AND checksum IS NULL", [r.version, checksumOf(list[r.version - 1]!.sql)]);
+  });
   const applied: number[] = [];
-  for (const m of MIGRATIONS) {
+  for (const m of list) {
     await db.tx(async (q) => {
-      // Serialize concurrent migrators across instances.
-      await q.query("SELECT pg_advisory_xact_lock(727274001)");
-      const done = await q.query("SELECT 1 FROM schema_migrations WHERE version = $1", [m.version]);
-      if (done.rowCount) return;
+      await q.query(`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`);
+      const done = await q.query<{ checksum: string | null }>("SELECT checksum FROM schema_migrations WHERE version = $1", [m.version]);
+      if (done.rows.length) {
+        if (done.rows[0]!.checksum !== checksumOf(m.sql)) throw new MigrationError("DRIFT", `Migration ${m.version} (${m.name}) checksum mismatch.`);
+        return;
+      }
       await q.query(m.sql);
-      await q.query("INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", [m.version, m.name]);
+      await q.query("INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)", [m.version, m.name, checksumOf(m.sql)]);
       applied.push(m.version);
     });
   }
   return applied;
 }
 
-export async function schemaVersion(db: Db): Promise<number> {
+export type MigrationStatus = {
+  current: number;
+  latest: number;
+  state: "up_to_date" | "pending" | "drift" | "ahead" | "uninitialized";
+  migrations: Array<{ version: number; name: string; status: "applied" | "pending" | "drift" | "unverified"; appliedAt?: string }>;
+  problem?: string;
+};
+
+/** Read-only status: per-version applied / pending / drift. Never writes. */
+export async function migrationStatus(db: Queryable, list: readonly Migration[] = MIGRATIONS): Promise<MigrationStatus> {
+  const exists = await db.query<{ t: string | null }>("SELECT to_regclass('schema_migrations')::text AS t");
+  const latest = list.length;
+  if (!exists.rows[0]?.t) return { current: 0, latest, state: "uninitialized", migrations: list.map((m) => ({ version: m.version, name: m.name, status: "pending" })) };
+  const hasChecksum = await db.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'schema_migrations' AND column_name = 'checksum' AND table_schema = current_schema()");
+  const rows = hasChecksum.rows.length
+    ? await ledger(db)
+    : (await db.query<LedgerRow>("SELECT version, name, NULL::text AS checksum, applied_at FROM schema_migrations ORDER BY version")).rows.map((x) => ({ ...x, version: Number(x.version) }));
+  const byVersion = new Map(rows.map((r) => [r.version, r]));
+  const migrations = list.map((m) => {
+    const r = byVersion.get(m.version);
+    if (!r) return { version: m.version, name: m.name, status: "pending" as const };
+    const status = r.checksum === null ? ("unverified" as const) : r.checksum === checksumOf(m.sql) ? ("applied" as const) : ("drift" as const);
+    return { version: m.version, name: m.name, status, appliedAt: (r.applied_at instanceof Date ? r.applied_at : new Date(String(r.applied_at))).toISOString() };
+  });
+  const current = rows.length ? Math.max(...rows.map((r) => r.version)) : 0;
+  const ahead = rows.filter((r) => r.version > latest).map((r) => r.version);
+  const state = ahead.length ? "ahead" : migrations.some((m) => m.status === "drift") ? "drift" : migrations.some((m) => m.status === "pending") ? "pending" : "up_to_date";
+  return { current, latest, state, migrations, ...(ahead.length ? { problem: `database has newer migration(s) ${ahead.join(",")}` } : {}) };
+}
+
+/** Highest applied version (0 when the ledger does not exist yet). */
+export async function schemaVersion(db: Queryable): Promise<number> {
+  const exists = await db.query<{ t: string | null }>("SELECT to_regclass('schema_migrations')::text AS t");
+  if (!exists.rows[0]?.t) return 0;
   const r = await db.query<{ v: number | null }>("SELECT max(version) AS v FROM schema_migrations");
   return Number(r.rows[0]?.v ?? 0);
 }
-export const LATEST_SCHEMA_VERSION = Math.max(...MIGRATIONS.map((m) => m.version));

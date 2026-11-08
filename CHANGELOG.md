@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added (database migrations, roles, dev seed)
+- Versioned migration workflow (docs/DATABASE.md): ledger `schema_migrations` gains a sha256 `checksum`; drift (changed SQL for an applied version), gaps and a database newer than the code are refused; ledgers from before checksums are upgraded in place. Each migration runs in its own transaction under the advisory lock. No automatic down migrations (rollback = backup restore or a new forward version).
+- Migration 2 `expiry_indexes` (form_sessions / oauth_states expiry, reconcile index).
+- `pnpm db:status` (read-only, per version applied / pending / drift / unverified, exit 2 unless up to date), `pnpm db:migrate` (uses `DATABASE_MIGRATION_URL` when set), `pnpm db:seed:dev`, `pnpm db:export`.
+- Server start and `/readyz` require status `up_to_date`.
+- Generated psql artifacts: `db/migrations/*.sql`, `db/psql/migrate.psql` (same ledger, checksums, lock), `db/seed/dev-seed.sql`; `check:migrations` fails when they are stale. Hand-written `db/psql/bootstrap-local.psql` creates a schema owner role and a row-only app role and a locked-down database without touching existing roles or server config.
+- Guarded, idempotent dev seed (`src/store/seed.ts`): allowlisted database names only, refuses when OAuth tokens exist; fictitious `demo-tenant` data with invited-only links and no pending/approved requests, tokens or ledger rows.
+- `check:migrations`: 7 checks on PGlite, 12 on real Postgres (fresh, no-op rerun, drift, failed migration rollback, gaps, newer database, upgrade from the old ledger, concurrent migrators, seed refusal, bootstrap roles, psql runner interop and drift, seed twice with stable counts, app role cannot run DDL).
+- Fixed a flaky durable check: identical Slack bodies signed within the same second were (correctly) rejected by the replay guard.
+
 ### Fixed (PR #1 review)
 - Slack form submissions no longer wait for approver DMs before the ack. Notifications run after the ack in a bounded background runner (`src/integrations/background.ts`: 20 s per task, at most 200 in flight, failures logged) that the server drains on shutdown before closing the pool. If creating the approval itself outruns the 2.5 s budget, the ack updates the modal to "Submitting" and the outcome (receipt with request id, or the error text) is DMed to the requester afterwards.
 - The form nonce is now consumed in the same transaction that creates the approval (`propose({ claim })`). A failure rolls the claim back so the form stays usable, and a second submit of the same form cannot create a second approval (it gets "This form was already submitted").
