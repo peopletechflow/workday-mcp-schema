@@ -13,7 +13,43 @@ export type PkcePair = {
   codeVerifier: string;
   codeChallenge: string;
   state: string;
+  /** Epoch ms; pending sign-ins older than PKCE_TTL_MS are discarded. */
+  createdAt: number;
 };
+
+export const PKCE_TTL_MS = 10 * 60 * 1000;
+const PKCE_MAX_PENDING = 20;
+export const OAUTH_HTTP_TIMEOUT_MS = 15_000;
+
+/**
+ * Token endpoint failure. `definitive` is true when the grant itself was refused
+ * (HTTP 400/401, e.g. invalid_grant): the stored refresh token is dead and the user must
+ * sign in again. Otherwise (5xx, 429, network error, timeout) the token may still be valid.
+ */
+export class OAuthTokenError extends Error {
+  constructor(readonly status: number | undefined, readonly definitive: boolean, message: string) {
+    super(message);
+    this.name = "OAuthTokenError";
+  }
+}
+
+/** Remember a pending sign-in, dropping expired entries and capping the map size. */
+export function rememberPkce(pending: Map<string, PkcePair>, pkce: PkcePair, now = Date.now()): void {
+  for (const [state, p] of pending) if (now - p.createdAt > PKCE_TTL_MS) pending.delete(state);
+  while (pending.size >= PKCE_MAX_PENDING) {
+    const oldest = pending.keys().next().value;
+    if (oldest === undefined) break;
+    pending.delete(oldest);
+  }
+  pending.set(pkce.state, pkce);
+}
+
+/** Take (single use) a pending sign-in by state. Undefined when unknown or expired. */
+export function takePkce(pending: Map<string, PkcePair>, state: string, now = Date.now()): PkcePair | undefined {
+  const p = pending.get(state);
+  pending.delete(state);
+  return p && now - p.createdAt <= PKCE_TTL_MS ? p : undefined;
+}
 
 /**
  * Per-user OAuth 2.0 authorization code + PKCE helpers.
@@ -23,7 +59,7 @@ export function createPkcePair(): PkcePair {
   const codeVerifier = randomBytes(32).toString("base64url");
   const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   const state = randomBytes(16).toString("base64url");
-  return { codeVerifier, codeChallenge, state };
+  return { codeVerifier, codeChallenge, state, createdAt: Date.now() };
 }
 
 export function buildAuthorizeUrl(config: AppConfig, pkce: PkcePair): string {
@@ -36,6 +72,33 @@ export function buildAuthorizeUrl(config: AppConfig, pkce: PkcePair): string {
   url.searchParams.set("code_challenge", pkce.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
+}
+
+async function postTokenEndpoint(
+  config: AppConfig,
+  body: URLSearchParams,
+  fetchImpl: typeof fetch,
+  what: string,
+): Promise<Record<string, unknown>> {
+  let res: Response;
+  try {
+    res = await fetchImpl(config.oauthTokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body,
+      signal: AbortSignal.timeout(OAUTH_HTTP_TIMEOUT_MS),
+    });
+  } catch {
+    throw new OAuthTokenError(undefined, false, `${what} failed: token endpoint unreachable or timed out.`);
+  }
+  if (!res.ok) {
+    const definitive = res.status === 400 || res.status === 401;
+    throw new OAuthTokenError(res.status, definitive, `${what} failed: HTTP ${res.status}.`);
+  }
+  return (await res.json()) as Record<string, unknown>;
 }
 
 export async function exchangeAuthorizationCode(
@@ -52,22 +115,7 @@ export async function exchangeAuthorizationCode(
     client_secret: config.oauthClientSecret,
     code_verifier: codeVerifier,
   });
-
-  const res = await fetchImpl(config.oauthTokenUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body,
-  });
-
-  if (!res.ok) {
-    throw new Error(`OAuth token exchange failed: HTTP ${res.status}`);
-  }
-
-  const json = (await res.json()) as Record<string, unknown>;
-  return normalizeTokenResponse(json);
+  return normalizeTokenResponse(await postTokenEndpoint(config, body, fetchImpl, "OAuth token exchange"));
 }
 
 export async function refreshAccessToken(
@@ -81,22 +129,7 @@ export async function refreshAccessToken(
     client_id: config.oauthClientId,
     client_secret: config.oauthClientSecret,
   });
-
-  const res = await fetchImpl(config.oauthTokenUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body,
-  });
-
-  if (!res.ok) {
-    throw new Error(`OAuth refresh failed: HTTP ${res.status}. User must sign in again.`);
-  }
-
-  const json = (await res.json()) as Record<string, unknown>;
-  const tokens = normalizeTokenResponse(json);
+  const tokens = normalizeTokenResponse(await postTokenEndpoint(config, body, fetchImpl, "OAuth refresh"));
   if (!tokens.refreshToken) {
     tokens.refreshToken = refreshToken;
   }

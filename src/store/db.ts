@@ -20,6 +20,8 @@ export function createPgDb(connectionString: string, opts: { max?: number; state
     connectionString,
     max: opts.max ?? 10,
     statement_timeout: opts.statementTimeoutMs ?? 10_000,
+    // Bound transactions that wait on the network while holding row locks (e.g. token refresh).
+    idle_in_transaction_session_timeout: 30_000,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });

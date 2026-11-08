@@ -43,10 +43,10 @@ export function signed(body: string, ts?: number, secret = SECRET): Record<strin
 
 export type Instance = ReturnType<typeof buildRuntime> & { logs: string[] };
 
-export function instance(db: Db, o: { env?: Record<string, string>; client?: WorkdayClient; slackApi?: SlackApi; fetchImpl?: typeof fetch } = {}): Instance {
+export function instance(db: Db, o: { env?: Record<string, string>; client?: WorkdayClient; slackApi?: SlackApi; fetchImpl?: typeof fetch; budgetMs?: number } = {}): Instance {
   const env = baseEnv(o.env);
   const logs: string[] = [];
-  const rt = buildRuntime({ cfg: loadRuntimeConfig(env), db, env, workdayClient: o.client, slackApi: o.slackApi, fetchImpl: o.fetchImpl, log: (f) => logs.push(JSON.stringify(f)) });
+  const rt = buildRuntime({ cfg: loadRuntimeConfig(env), db, env, workdayClient: o.client, slackApi: o.slackApi, fetchImpl: o.fetchImpl, budgetMs: o.budgetMs, log: (f) => logs.push(JSON.stringify(f)) });
   return Object.assign(rt, { logs });
 }
 
@@ -64,17 +64,31 @@ export async function seed(db: Db, opts: { approvers?: string[]; rotate?: boolea
   await rt.backend.setPolicy("seed", { tenantId: "acme", commitTool: "commit_request_time_off", approverUserIds: opts.approvers ?? ["mgr", "alice", "hr"], rotate: opts.rotate });
 }
 
+/** Fake Slack Web API: records views.open, chat.postMessage, and response_url posts. */
 export function fakeSlack(delayMs = 0, ok = true) {
   const calls: Array<{ triggerId: string; view: Record<string, unknown> }> = [];
+  const posts: Array<{ channel: string; text: string; blocks?: Record<string, unknown>[] }> = [];
+  const responses: Array<{ url: string; body: Record<string, unknown> }> = [];
   const api: SlackApi = {
     async viewsOpen(triggerId, view) {
       calls.push({ triggerId, view });
       if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       return ok ? { ok: true } : { ok: false, error: "expired_trigger_id" };
     },
+    async postMessage(channel, text, blocks) {
+      posts.push({ channel, text, blocks });
+      return { ok: true, ts: `${posts.length}.000` };
+    },
+    async respond(url, body) {
+      responses.push({ url, body });
+      return { ok: true };
+    },
   };
-  return { api, calls };
+  return { api, calls, posts, responses };
 }
+
+/** Everything the fake Slack saw, as one string (for "never contains X" assertions). */
+export const slackText = (s: ReturnType<typeof fakeSlack>) => JSON.stringify([s.calls, s.posts, s.responses]);
 
 export const cmdBody = (text = "", o: Record<string, string> = {}) =>
   new URLSearchParams({ team_id: TEAM, user_id: "U0ALICE", channel_id: CHANNEL, command: "/workday", text, trigger_id: "1334.7384.abc", ...o }).toString();
@@ -89,7 +103,13 @@ export function submission(nonce: string, values: { start: string; end: string; 
   }))}`;
 }
 
-export const button = (requestId: string, hash: string, user: string, action = "wd_approval_approve", team = TEAM) =>
-  `payload=${encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: team }, user: { id: user }, actions: [{ action_id: action, value: `${requestId}|${hash}` }] }))}`;
+export const RESPONSE_URL = "https://hooks.slack.com/actions/T0ALLOWED/123/abc";
+
+export const button = (requestId: string, hash: string, user: string, action = "wd_approval_approve", team = TEAM, responseUrl?: string) =>
+  `payload=${encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: team }, user: { id: user }, ...(responseUrl ? { response_url: responseUrl } : {}), actions: [{ action_id: action, value: `${requestId}|${hash}` }] }))}`;
+
+/** The requester's "Submit to Workday" button (value is the request id only). */
+export const submitButton = (requestId: string, user: string, responseUrl: string = RESPONSE_URL, team = TEAM) =>
+  `payload=${encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: team }, user: { id: user }, response_url: responseUrl, actions: [{ action_id: "wd_approval_submit", value: requestId }] }))}`;
 
 export { DbApprovalBackend };

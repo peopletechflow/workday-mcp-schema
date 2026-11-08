@@ -23,25 +23,28 @@ const ConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
-const PROD_HOST_HINTS = [
-  "services1.workday.com",
-  "myworkday.com",
-  "wd3.myworkday.com",
-  "wd5.myworkday.com",
-  "wd12.myworkday.com",
+/**
+ * Workday production API / UI hosts. Covers bare and data-center-prefixed forms, e.g.
+ * services1.workday.com, wd2-services1.workday.com, wd5-services1.myworkday.com,
+ * wd3.myworkday.com, www.myworkday.com.
+ */
+const PROD_HOST_PATTERNS = [
+  /(^|\.)(wd\d+-)?services\d*\.(my)?workday\.com$/,
+  /(^|\.)wd\d+\.(my)?workday\.com$/,
+  /(^|\.)myworkday\.com$/,
 ];
 
-function looksLikeProduction(baseUrl: string, tenant: string): boolean {
+export function looksLikeProduction(baseUrl: string, tenant: string): boolean {
   const host = new URL(baseUrl).hostname.toLowerCase();
   const tenantLower = tenant.toLowerCase();
   if (tenantLower.includes("prod") && !tenantLower.includes("sandbox")) {
     return true;
   }
-  // Implementation / preview hosts are safe; bare services hosts without impl/preview are suspect.
+  // Implementation / preview / sandbox hosts are non-production.
   if (host.includes("impl") || host.includes("preview") || host.includes("sandbox")) {
     return false;
   }
-  return PROD_HOST_HINTS.some((hint) => host === hint || host.endsWith(`.${hint}`));
+  return PROD_HOST_PATTERNS.some((re) => re.test(host));
 }
 
 function envBool(name: string, fallback: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -103,6 +106,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
   return config;
+}
+
+const DEV_TOKEN_SECRET = "local-dev-only-change-me";
+
+/**
+ * Secret for the stdio server's file token store. Fixtures may use a dev secret; live mode
+ * requires WORKDAY_TOKEN_ENCRYPTION_KEY (at least 32 characters) and never falls back.
+ */
+export function tokenStoreSecret(config: AppConfig, env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.WORKDAY_TOKEN_ENCRYPTION_KEY?.trim();
+  if (config.useFixtures) return raw || DEV_TOKEN_SECRET;
+  if (!raw || raw === DEV_TOKEN_SECRET || raw.length < 32) {
+    throw new Error("Live mode requires WORKDAY_TOKEN_ENCRYPTION_KEY (at least 32 characters; no fallback key).");
+  }
+  return raw;
 }
 
 export function workdayClientOptions(config: AppConfig) {

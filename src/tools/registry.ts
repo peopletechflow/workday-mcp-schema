@@ -16,6 +16,8 @@ export type RegistryEntry = {
   /** Wired to a live Workday surface yet, or fixture/stub only. */
   liveStatus: "live-stub" | "fixture-only";
   pairedWith?: string;
+  /** Commit removes or refuses something (cancel, deny). Surfaces as MCP destructiveHint. */
+  destructive?: true;
 };
 
 const BR_SELF = "Native self-service exists in UI, but assistant needs a narrow, per-user, audited read.";
@@ -29,13 +31,13 @@ export const TOOL_REGISTRY: RegistryEntry[] = [
   { name: T.previewRequestTimeOff.name, toolClass: "write-preview", access: "write", audience: "worker", domain: "absence", surface: "REST", piiFields: ["comment"], buildReason: BR_WRITE, liveStatus: "live-stub", pairedWith: T.commitRequestTimeOff.name },
   { name: T.commitRequestTimeOff.name, toolClass: "write-commit", access: "write", audience: "worker", domain: "absence", surface: "REST", piiFields: ["comment"], buildReason: BR_WRITE, liveStatus: "live-stub", pairedWith: T.previewRequestTimeOff.name },
   { name: T.previewCancelTimeOff.name, toolClass: "write-preview", access: "write", audience: "worker", domain: "absence", surface: "WWS", piiFields: ["reason"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.commitCancelTimeOff.name },
-  { name: T.commitCancelTimeOff.name, toolClass: "write-commit", access: "write", audience: "worker", domain: "absence", surface: "WWS", piiFields: ["reason"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.previewCancelTimeOff.name },
+  { name: T.commitCancelTimeOff.name, toolClass: "write-commit", access: "write", audience: "worker", domain: "absence", surface: "WWS", piiFields: ["reason"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.previewCancelTimeOff.name, destructive: true },
   { name: T.listMyTeam.name, toolClass: "read", access: "read", audience: "manager", domain: "hcm", surface: "RaaS", piiFields: ["preferredName"], buildReason: "Manager direct-reports read scoped by caller's security; RaaS join.", liveStatus: "fixture-only" },
   { name: T.listTeamTimeOffRequests.name, toolClass: "read", access: "read", audience: "manager", domain: "absence", surface: "RaaS", piiFields: ["worker.descriptor"], buildReason: "Team-wide filtered read; RaaS report with status filter.", liveStatus: "fixture-only" },
   { name: T.previewApproveTimeOff.name, toolClass: "write-preview", access: "write", audience: "manager", domain: "absence", surface: "WWS", piiFields: ["worker.descriptor", "comment"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.commitApproveTimeOff.name },
   { name: T.commitApproveTimeOff.name, toolClass: "write-commit", access: "write", audience: "manager", domain: "absence", surface: "WWS", piiFields: ["worker.descriptor", "comment"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.previewApproveTimeOff.name },
   { name: T.previewDenyTimeOff.name, toolClass: "write-preview", access: "write", audience: "manager", domain: "absence", surface: "WWS", piiFields: ["worker.descriptor", "comment"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.commitDenyTimeOff.name },
-  { name: T.commitDenyTimeOff.name, toolClass: "write-commit", access: "write", audience: "manager", domain: "absence", surface: "WWS", piiFields: ["worker.descriptor", "comment"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.previewDenyTimeOff.name },
+  { name: T.commitDenyTimeOff.name, toolClass: "write-commit", access: "write", audience: "manager", domain: "absence", surface: "WWS", piiFields: ["worker.descriptor", "comment"], buildReason: BR_WRITE, liveStatus: "fixture-only", pairedWith: T.previewDenyTimeOff.name, destructive: true },
   { name: T.getMyBenefitsEnrollments.name, toolClass: "read", access: "read", audience: "worker", domain: "benefits", surface: "RaaS", piiFields: ["coverageLevel"], buildReason: BR_SELF, liveStatus: "fixture-only" },
   { name: T.listMyPayStatements.name, toolClass: "read", access: "read", audience: "worker", domain: "payroll", surface: "RaaS", piiFields: ["grossAmount", "netAmount"], buildReason: "Read-only pay summary; payroll writes are out of scope forever.", liveStatus: "fixture-only" },
   { name: T.getSupervisoryOrg.name, toolClass: "read", access: "read", audience: "worker", domain: "org", surface: "REST", piiFields: ["manager.descriptor"], buildReason: "Single-record org read by WID via REST.", liveStatus: "fixture-only" },
@@ -46,6 +48,9 @@ export const TOOL_REGISTRY: RegistryEntry[] = [
 /** Roles allowed for a registry entry (from src/rbac/permissions.ts; kept parallel to stay DRY). */
 export const rolesFor = (e: RegistryEntry): readonly Role[] => TOOL_PERMISSIONS[e.name] ?? [];
 
+/** Registry entry by tool name. */
+export const registryEntry = (name: string): RegistryEntry | undefined => TOOL_REGISTRY.find((t) => t.name === name);
+
 /** Static guardrails, also asserted at startup. */
 export function assertRegistryInvariants(registeredNames: string[]): void {
   const names = TOOL_REGISTRY.map((t) => t.name);
@@ -54,6 +59,7 @@ export function assertRegistryInvariants(registeredNames: string[]): void {
     if (/call_workday|passthrough|raw/i.test(t.name)) throw new Error(`Forbidden passthrough tool: ${t.name}`);
     if (t.domain === "payroll" && t.access === "write") throw new Error(`Payroll write tools are forbidden: ${t.name}`);
     if (t.toolClass !== "read" && !t.pairedWith) throw new Error(`Write tool without preview/commit pair: ${t.name}`);
+    if (t.destructive && t.toolClass !== "write-commit") throw new Error(`Only commit tools can be destructive: ${t.name}`);
     const roles = TOOL_PERMISSIONS[t.name];
     if (!roles || roles.length === 0) throw new Error(`Tool has no RBAC mapping in src/rbac/permissions.ts: ${t.name}`);
     if (t.access === "write" && roles.includes("payroll_viewer")) throw new Error(`payroll_viewer must not have write tools: ${t.name}`);

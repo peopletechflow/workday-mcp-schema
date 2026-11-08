@@ -20,7 +20,8 @@
     "admin": "node dist/cli/admin.js",
     "db:migrate": "node dist/cli/admin.js migrate",
     "check:durable": "tsx scripts/check-durable.ts",
-    "check": "npm run typecheck && npm run check:rbac && npm run check:integrations && npm run check:durable"
+    "check:mcp": "tsx scripts/check-mcp.ts",
+    "check": "npm run typecheck && npm run check:rbac && npm run check:mcp && npm run check:integrations && npm run check:durable"
   },
   "engines": {
     "node": ">=18"

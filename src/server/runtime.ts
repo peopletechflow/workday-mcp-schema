@@ -17,6 +17,7 @@ import { ApprovalExecutionService, parseTypeMap } from "../integrations/approval
 import { LinkService } from "../integrations/link.js";
 import { createRouter } from "../integrations/http.js";
 import { createHttpSlackApi, type SlackApi } from "../integrations/slack/api.js";
+import { SlackApprovalNotifier } from "../integrations/slack/notify.js";
 import type { IntakeSink, IntakeRecord } from "../integrations/slack/intake.js";
 import { createLogger, type LogFn } from "../observability/log.js";
 
@@ -28,6 +29,12 @@ export type RuntimeConfig = {
   production: boolean;
   migrateOnStart: boolean;
   commandName: string;
+  /**
+   * Account linking cannot yet prove the Workday account that signs in is the admin-invited
+   * user id (no sandbox-validated "who am I" contract). Production requires this explicit
+   * acknowledgement (LINK_ACCEPT_UNVERIFIED_SIGNER=true). See docs/RUNBOOK.md.
+   */
+  acceptUnverifiedLinkSigner: boolean;
 };
 
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -43,6 +50,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     if (!app.oauthRedirectUri.startsWith("https://")) errors.push("WORKDAY_OAUTH_REDIRECT_URI must be https in production");
     if (integrations.slack.enabled && !integrations.slack.botToken) errors.push("SLACK_BOT_TOKEN is required for forms (views.open) in production");
     if (env.WORKDAY_TOKEN_ENCRYPTION_KEY === "local-dev-only-change-me") errors.push("Do not use the local dev token key");
+    if (env.LINK_ACCEPT_UNVERIFIED_SIGNER !== "true") {
+      errors.push(
+        "LINK_ACCEPT_UNVERIFIED_SIGNER=true is required in production: account linking does not yet verify that the Workday account " +
+          "that signs in is the invited user (see docs/RUNBOOK.md, 'Account linking identity')",
+      );
+    }
   }
   const port = z.coerce.number().int().min(1).max(65535).safeParse(env.PORT ?? "8787");
   if (!port.success) errors.push("PORT must be 1-65535");
@@ -55,6 +68,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     production,
     migrateOnStart: env.DB_MIGRATE_ON_START === "true",
     commandName: env.SLACK_COMMAND_NAME || "/workday",
+    acceptUnverifiedLinkSigner: env.LINK_ACCEPT_UNVERIFIED_SIGNER === "true",
   };
 }
 
@@ -73,6 +87,7 @@ export function buildRuntime(opts: {
   log?: LogFn;
   sink?: IntakeSink;
   nowSec?: number;
+  budgetMs?: number;
 }) {
   const { cfg, db } = opts;
   const env = opts.env ?? process.env;
@@ -82,7 +97,7 @@ export function buildRuntime(opts: {
   const links = new DbIdentityLinks(db);
   const entitlements = new DbEntitlements(db);
   const tokens = new DbTokenStore(db, keys, tenantId);
-  const backend = new DbApprovalBackend(db, cfg.integrations.approvals.ttlMs);
+  const backend = new DbApprovalBackend(db, cfg.integrations.approvals.decisionTtlMs, undefined, cfg.integrations.approvals.commitWindowMs);
   const client: WorkdayClient =
     opts.workdayClient ?? (cfg.app.useFixtures ? new FixtureWorkdayClient() : new HttpWorkdayClient(cfg.app, workdayClientOptions(cfg.app), opts.fetchImpl));
   const accessToken = durableAccessTokens(db, tokens, cfg.app, opts.fetchImpl);
@@ -92,6 +107,8 @@ export function buildRuntime(opts: {
     backend,
     client,
     accessToken,
+    // Slack ack paths only check that a link exists; the token refresh happens at commit.
+    linked: async (userId) => Boolean(await tokens.get(userId)),
     authzFor: (i) => entitlements.authzFor(i),
     typeMap: parseTypeMap(env.WORKDAY_TIME_OFF_TYPE_MAP),
     assertCommitContract: cfg.app.useFixtures
@@ -103,6 +120,7 @@ export function buildRuntime(opts: {
   });
   const link = new LinkService({ db, config: cfg.app, keys, links, tokens, fetchImpl: opts.fetchImpl });
   const slackApi = opts.slackApi ?? (cfg.integrations.slack.botToken ? createHttpSlackApi(cfg.integrations.slack.botToken) : undefined);
+  const notifier = new SlackApprovalNotifier({ config: cfg.integrations.slack, api: slackApi, directory: links, commandName: cfg.commandName, log });
   const ready = async () => (await schemaVersion(db)) >= LATEST_SCHEMA_VERSION;
   const route = createRouter({
     slack: cfg.integrations.slack,
@@ -113,11 +131,13 @@ export function buildRuntime(opts: {
     decider: backend,
     link,
     slackApi,
+    notifier,
     commandName: cfg.commandName,
+    budgetMs: opts.budgetMs,
     sink: opts.sink ?? metadataOnlySink(log),
     ready,
     log,
     nowSec: opts.nowSec,
   });
-  return { route, service, backend, links, entitlements, tokens, link, keys, client, log, ready };
+  return { route, service, backend, links, entitlements, tokens, link, keys, client, log, ready, notifier };
 }

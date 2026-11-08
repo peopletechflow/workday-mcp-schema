@@ -4,24 +4,27 @@
  *   /workday            or  /workday timeoff   -> open the time-off modal (views.open with trigger_id)
  *   /workday submit <apr_id>                   -> commit an approved request (requester only)
  *   /workday status <apr_id>                   -> status for requester or assigned approver
+ *   /workday link                              -> start account linking (invited users)
+ *   /workday help                              -> usage
  *
- * Replies are only the HTTP acknowledgement body (ephemeral to the invoking user). Nothing is
- * posted to channels. Slack requires an ack within 3 s and trigger_id expires after 3 s, so
- * views.open and commit run with a 2.5 s budget before the ack is returned.
+ * The HTTP ack body is an ephemeral reply to the invoking user; nothing is posted to channels.
+ * Slack requires an ack within 3 s and trigger_id expires after 3 s, so views.open and commit
+ * run with a 2.5 s budget. A commit that takes longer finishes in the background and its result
+ * replaces the ack through the command's response_url.
  */
 import { z } from "zod";
 import type { SlackConfig } from "../config.js";
 import type { IdentityResolver } from "../identity.js";
-import { ApprovalError } from "../approvals/workflow.js";
 import type { ApprovalExecutionService } from "../approvals/execution.js";
-import { RbacDeniedError } from "../../rbac/enforce.js";
 import { type ReplayGuard, SlackVerificationError, verifySlackRequest } from "./verify.js";
 import { type FormSessions, startTimeOffForm } from "./forms.js";
-import { withinBudget, type SlackApi } from "./api.js";
+import { isSlackResponseUrl, withinBudget, type SlackApi } from "./api.js";
 import { defaultLog, fingerprint, type IntakeLog } from "./redact.js";
+import { slackErrorMessage } from "./errors.js";
+import type { SlackApprovalNotifier } from "./notify.js";
+import { ACK_BUDGET_MS, submitFromSlack } from "./submit.js";
 
 export const TIME_OFF_SHORTCUT_ID = "wd_time_off_shortcut";
-export const ACK_BUDGET_MS = 2500;
 
 export type CommandDeps = {
   config: SlackConfig;
@@ -30,6 +33,7 @@ export type CommandDeps = {
   sessions: FormSessions;
   service: ApprovalExecutionService;
   slackApi?: SlackApi;
+  notifier?: SlackApprovalNotifier;
   /** Account linking (durable runtime). Absent means linking is not offered. */
   link?: { start(slackTeamId: string, slackUserId: string): Promise<string | undefined> };
   commandName: string;
@@ -38,7 +42,7 @@ export type CommandDeps = {
   log?: IntakeLog;
 };
 
-export type CommandAck = { status: 200 | 400 | 401 | 403; body: { response_type: "ephemeral"; text: string } | "" ; reason?: string };
+export type CommandAck = { status: 200 | 400 | 401 | 403; body: { response_type: "ephemeral"; text: string } | ""; reason?: string };
 
 const ephemeral = (text: string): CommandAck => ({ status: 200, body: { response_type: "ephemeral", text } });
 
@@ -49,9 +53,19 @@ const CommandSchema = z.object({
   command: z.string().min(1),
   text: z.string().max(200).default(""),
   trigger_id: z.string().min(1).max(200),
+  response_url: z.string().max(512).optional(),
 });
 
 const APR_ID = /^apr_[A-Za-z0-9_-]{16,64}$/;
+
+const usage = (cmd: string) =>
+  [
+    "Usage:",
+    `\`${cmd}\` opens the time-off form.`,
+    `\`${cmd} status apr_...\` shows a request.`,
+    `\`${cmd} submit apr_...\` sends an approved request to Workday (you can also use the Submit button).`,
+    `\`${cmd} link\` links your Workday account (after an administrator invites you).`,
+  ].join("\n");
 
 async function openForm(deps: CommandDeps, teamId: string, userId: string, triggerId: string): Promise<string> {
   if (!deps.slackApi) return "Forms are not configured (no Slack API client).";
@@ -80,6 +94,7 @@ export async function handleSlashCommand(rawBody: string, headers: Record<string
   if (c.command !== deps.commandName) return deny(400, "unknown_command");
   if (!deps.config.allowedTeamIds.includes(c.team_id)) return deny(403, "team_not_allowed");
   if (!deps.config.allowedChannelIds.includes(c.channel_id)) return deny(403, "channel_not_allowed");
+  const responseUrl = isSlackResponseUrl(c.response_url) ? c.response_url : undefined;
   if (c.text.trim() === "link") {
     if (!deps.link) return ephemeral("Account linking is not configured.");
     const url = await deps.link.start(c.team_id, c.user_id);
@@ -87,6 +102,7 @@ export async function handleSlashCommand(rawBody: string, headers: Record<string
     log({ evt: "link_started" });
     return ephemeral(`Sign in to Workday to link your account (expires in 10 minutes): ${url}`);
   }
+  if (c.text.trim() === "help") return ephemeral(usage(deps.commandName));
   const identity = await deps.identities.resolveSlack(c.team_id, c.user_id);
   if (!identity) return ephemeral(`Your Slack account is not linked. Run \`${deps.commandName} link\` if an administrator invited you.`);
 
@@ -102,18 +118,18 @@ export async function handleSlashCommand(rawBody: string, headers: Record<string
         const s = await deps.service.status(identity, arg);
         return ephemeral(`Request ${arg}: ${s.status}. ${s.summary}`);
       }
-      // Deterministic key: Slack retries of the same submit do not double-commit.
-      const run = deps.service.commitApproved(identity, arg, `slack-submit-${arg}`);
-      run.catch((e: unknown) => log({ evt: "commit_failed", code: e instanceof ApprovalError ? e.code : e instanceof RbacDeniedError ? "rbac" : "error" }));
-      const res = await withinBudget(run, deps.budgetMs ?? ACK_BUDGET_MS);
-      if (!res.done) return ephemeral(`Submitting ${arg} to Workday. Check with \`${deps.commandName} status ${arg}\`.`);
-      const body = res.value as { request?: { workdayEventId?: string; status?: string } };
-      return ephemeral(`Submitted to Workday (${body.request?.status ?? "ok"}, event ${body.request?.workdayEventId ?? "n/a"}).`);
+      const out = await submitFromSlack(
+        { service: deps.service, commandName: deps.commandName, budgetMs: deps.budgetMs, log },
+        identity,
+        arg,
+        (late) => deps.notifier?.replace(responseUrl, late.text) ?? Promise.resolve(),
+      );
+      return ephemeral(out.text);
     }
-    return ephemeral(`Usage: \`${deps.commandName}\` (time off form), \`${deps.commandName} submit apr_...\`, \`${deps.commandName} status apr_...\``);
+    return ephemeral(usage(deps.commandName));
   } catch (e) {
-    if (e instanceof ApprovalError) return ephemeral(`Not done: ${e.code}.`);
-    if (e instanceof RbacDeniedError) return ephemeral("Not done: permission denied.");
+    const m = slackErrorMessage(e, deps.commandName);
+    if (m) return ephemeral(m.text);
     log({ evt: "command_error" });
     return ephemeral("Not done: internal error.");
   }

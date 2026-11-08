@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { annotationsFor, markRegistered } from "./framework.js";
 import { getMyTimeOffBalance } from "../schemas/tools/self-service.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { IsoDateSchema } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
-import { assertToolAllowed, type Role } from "../rbac/index.js";
+import { assertToolAllowedForUser, type AssignmentStore, type Role } from "../rbac/index.js";
 import type { WorkdayClient } from "../workday/client.js";
 import { WorkdayApiError } from "../workday/client.js";
 import type { AuditLogger } from "../safety/audit.js";
@@ -26,10 +27,13 @@ export function registerGetMyTimeOffBalance(
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
     resolveUserRoles: () => Role[];
+    /** User grants/denies; denies win over roles (fail closed). */
+    assignments?: AssignmentStore;
   },
 ): void {
   const toolName = "get_my_time_off_balance";
 
+  markRegistered(server, toolName);
   server.registerTool(
     toolName,
     {
@@ -39,19 +43,14 @@ export function registerGetMyTimeOffBalance(
         "as flattened JSON. Uses the caller's OAuth token so Workday security groups apply. " +
         "Who: any authenticated worker with Absence self-view. Does not write.",
       inputSchema: InputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: annotationsFor({ name: toolName, toolClass: "read" }),
     },
     async (args) => {
       const started = Date.now();
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
-        assertToolAllowed(deps.resolveUserRoles(), toolName);
+        assertToolAllowedForUser({ userId, roles: deps.resolveUserRoles(), toolName, assignments: deps.assignments });
         await ensureFixtureSession(deps.config, deps.tokenStore, userId);
         const accessToken = await requireUserAccessToken(
           deps.config,

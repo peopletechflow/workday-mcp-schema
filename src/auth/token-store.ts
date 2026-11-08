@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { OAuthTokens } from "./oauth.js";
 
@@ -13,7 +13,7 @@ type StoredRecord = {
 
 /**
  * File-backed encrypted token store (AES-256-GCM).
- * Key is derived from WORKDAY_TOKEN_ENCRYPTION_KEY or a local-dev fallback.
+ * The caller supplies the secret (see tokenStoreSecret in config.ts); there is no built-in fallback.
  * Replace with a proper KMS / secrets manager before production.
  */
 export class TokenStore {
@@ -21,8 +21,7 @@ export class TokenStore {
 
   constructor(
     private readonly path: string,
-    encryptionSecret: string = process.env.WORKDAY_TOKEN_ENCRYPTION_KEY ??
-      "local-dev-only-change-me",
+    encryptionSecret: string,
   ) {
     this.key = createHash("sha256").update(encryptionSecret).digest();
   }
@@ -39,15 +38,21 @@ export class TokenStore {
     const encrypted = this.encrypt(userId, tokens);
     const next = all.filter((r) => r.userId !== userId);
     next.push(encrypted);
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(next, null, 2), { mode: 0o600 });
+    await this.writeAll(next);
   }
 
   async delete(userId: string): Promise<void> {
     const all = await this.readAll();
-    const next = all.filter((r) => r.userId !== userId);
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(next, null, 2), { mode: 0o600 });
+    await this.writeAll(all.filter((r) => r.userId !== userId));
+  }
+
+  /** Write to a temp file then rename, so a crash never leaves a truncated store. Owner-only. */
+  private async writeAll(records: StoredRecord[]): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    const tmp = `${this.path}.${randomBytes(6).toString("hex")}.tmp`;
+    await writeFile(tmp, JSON.stringify(records, null, 2), { mode: 0o600 });
+    await rename(tmp, this.path);
+    await chmod(this.path, 0o600);
   }
 
   private async readAll(): Promise<StoredRecord[]> {

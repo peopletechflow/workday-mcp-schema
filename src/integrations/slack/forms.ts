@@ -8,10 +8,10 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { SlackConfig } from "../config.js";
-import type { BoundIdentity, IdentityResolver } from "../identity.js";
-import { ApprovalError, type ApprovalRequest } from "../approvals/workflow.js";
+import type { BoundIdentity, IdentityResolver, SlackAddress } from "../identity.js";
+import { type ApprovalRequest } from "../approvals/workflow.js";
+import { slackErrorMessage } from "./errors.js";
 import type { ApprovalExecutionService } from "../approvals/execution.js";
-import { RbacDeniedError } from "../../rbac/enforce.js";
 import { type ReplayGuard, SlackVerificationError, verifySlackRequest } from "./verify.js";
 
 export const TIME_OFF_CALLBACK_ID = "wd_time_off_request";
@@ -67,7 +67,7 @@ export function buildTimeOffModal(nonce: string): Record<string, unknown> {
         label: { type: "plain_text", text: "Type" },
         element: { type: "static_select", action_id: "v", options: TIME_OFF_TYPES.map((t) => ({ text: { type: "plain_text", text: t }, value: t })) },
       },
-      { type: "input", block_id: "days", label: { type: "plain_text", text: "Days" }, element: { type: "number_input", action_id: "v", is_decimal_allowed: true, min_value: "0.5", max_value: "30" } },
+      { type: "input", block_id: "days", label: { type: "plain_text", text: "Days" }, hint: { type: "plain_text", text: "Count every calendar day in the range, weekends included (or half of that for half days)." }, element: { type: "number_input", action_id: "v", is_decimal_allowed: true, min_value: "0.5", max_value: "30" } },
       { type: "input", block_id: "comment", optional: true, label: { type: "plain_text", text: "Comment" }, element: { type: "plain_text_input", action_id: "v", max_length: 300 } },
     ],
   };
@@ -102,7 +102,7 @@ function readValue(values: Record<string, Record<string, Record<string, unknown>
 }
 
 export type FormOutcome =
-  | { status: 200; body: Record<string, unknown> | ""; approval?: ApprovalRequest }
+  | { status: 200; body: Record<string, unknown> | ""; approval?: ApprovalRequest; /** Verified submitter, for notifications. */ slackUser?: SlackAddress }
   | { status: 400 | 401 | 403; body: ""; reason: string };
 
 export type FormDeps = {
@@ -111,6 +111,8 @@ export type FormDeps = {
   replay: ReplayGuard;
   sessions: FormSessions;
   service: ApprovalExecutionService;
+  /** Slash command name, used in "run /workday link" hints. */
+  commandName?: string;
   nowSec?: number;
 };
 
@@ -156,17 +158,29 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
     return { status: 200, body: { response_action: "errors", errors } };
   }
   const f = parsed.data;
+  const fieldError = (e: unknown) => {
+    const m = slackErrorMessage(e, deps.commandName ?? "/workday");
+    return m ? { status: 200 as const, body: { response_action: "errors", errors: { [m.field]: m.text.slice(0, 150) } } } : undefined;
+  };
+  // Pre-check before consuming the session: fixable errors (day count, link, permissions)
+  // are shown on the modal and the user can correct and resubmit the same form.
+  try {
+    await deps.service.checkTimeOff(identity, f);
+  } catch (e) {
+    const out = fieldError(e);
+    if (out) return out;
+    throw e;
+  }
   if (!(await deps.sessions.consume(p.view.private_metadata))) return deny(403, "form_already_used");
   let approval: ApprovalRequest;
   try {
     approval = await deps.service.proposeTimeOff(identity, f, "slack_form");
   } catch (e) {
-    if (e instanceof RbacDeniedError || e instanceof ApprovalError) {
-      return { status: 200, body: { response_action: "errors", errors: { start: "You are not allowed to submit this request, or no approver is configured." } } };
-    }
+    const out = fieldError(e);
+    if (out) return out;
     throw e;
   }
-  return { status: 200, body: { response_action: "clear" }, approval };
+  return { status: 200, body: { response_action: "clear" }, approval, slackUser: { teamId: p.team.id, userId: p.user.id } };
 }
 
 /**

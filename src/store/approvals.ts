@@ -26,11 +26,13 @@ type DbRow = {
   change: Record<string, unknown>; change_hash: string; summary: string; status: ApprovalRequest["status"];
   created_ms: string; expires_ms: string; assigned_approvers: string[]; decided_by: string | null; decided_ms: string | null;
   source: ApprovalRequest["source"]; result: unknown; updated_ms: string;
+  /** Expiry evaluated by the database clock, so app-server clock skew cannot extend a window. */
+  is_expired: boolean;
 };
 const COLS = `id, tenant_id, requester_user_id, commit_tool, resource, change, change_hash, summary, status,
   extract(epoch from created_at)*1000 AS created_ms, extract(epoch from expires_at)*1000 AS expires_ms,
   assigned_approvers, decided_by, extract(epoch from decided_at)*1000 AS decided_ms, source, result,
-  extract(epoch from updated_at)*1000 AS updated_ms`;
+  extract(epoch from updated_at)*1000 AS updated_ms, (expires_at < now()) AS is_expired`;
 
 function toReq(r: DbRow): ApprovalRequest {
   return {
@@ -45,8 +47,22 @@ function toReq(r: DbRow): ApprovalRequest {
 export type BeginCommit = { kind: "execute"; request: ApprovalRequest } | { kind: "replay"; result: unknown };
 export type CommitOutcome = { state: "ok"; body: unknown } | { state: "error"; body: unknown } | { state: "unknown"; body: unknown };
 
+type Locked = { req: ApprovalRequest; expired: boolean };
+
+const HOUR_MS = 60 * 60 * 1000;
+
 export class DbApprovalBackend implements ApprovalDecider {
-  constructor(private readonly db: Db, readonly ttlMs = 15 * 60 * 1000, readonly staleCommitMs = 10 * 60 * 1000) {}
+  /**
+   * @param decisionTtlMs  time an approver has to decide after propose
+   * @param staleCommitMs  'committing' older than this is surfaced for reconcile
+   * @param commitWindowMs time the requester has to submit after approval
+   */
+  constructor(
+    private readonly db: Db,
+    readonly decisionTtlMs = 72 * HOUR_MS,
+    readonly staleCommitMs = 10 * 60 * 1000,
+    readonly commitWindowMs = 24 * HOUR_MS,
+  ) {}
 
   async setPolicy(actor: string, p: { tenantId: string; commitTool: string; approverUserIds: string[]; allowSelfApproval?: boolean; rotate?: boolean }): Promise<void> {
     const entry = TOOL_REGISTRY.find((t) => t.name === p.commitTool);
@@ -92,7 +108,7 @@ export class DbApprovalBackend implements ApprovalDecider {
       const r = await q.query<DbRow>(
         `INSERT INTO approval_requests (id, tenant_id, requester_user_id, commit_tool, resource, change, change_hash, summary, status, expires_at, assigned_approvers, source)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending', now() + ($9 || ' milliseconds')::interval, $10, $11) RETURNING ${COLS}`,
-        [id, tenantId, userId, input.commitTool, input.resource, JSON.stringify(change), hash, input.summary.slice(0, 500), String(this.ttlMs), eligible, input.source],
+        [id, tenantId, userId, input.commitTool, input.resource, JSON.stringify(change), hash, input.summary.slice(0, 500), String(this.decisionTtlMs), eligible, input.source],
       );
       return toReq(r.rows[0]!);
     });
@@ -108,20 +124,21 @@ export class DbApprovalBackend implements ApprovalDecider {
     return r.rows.map(toReq);
   }
 
-  private async lock(q: Queryable, id: string): Promise<ApprovalRequest> {
+  private async lock(q: Queryable, id: string): Promise<Locked> {
     const r = await q.query<DbRow>(`SELECT ${COLS} FROM approval_requests WHERE id = $1 FOR UPDATE`, [id]);
-    if (!r.rows[0]) throw new ApprovalError("NOT_FOUND", "Unknown approval request.");
-    const req = toReq(r.rows[0]);
-    if (req.status === "pending" && req.expiresAt < Date.now()) {
+    const row = r.rows[0];
+    if (!row) throw new ApprovalError("NOT_FOUND", "Unknown approval request.");
+    const req = toReq(row);
+    if (req.status === "pending" && row.is_expired) {
       await q.query("UPDATE approval_requests SET status = 'expired', updated_at = now() WHERE id = $1", [id]);
       req.status = "expired";
     }
-    return req;
+    return { req, expired: row.is_expired };
   }
 
   async decide(input: { requestId: string; approver: BoundIdentity; decision: "approve" | "reject"; presentedHash: string }): Promise<ApprovalRequest> {
     const out = await this.db.tx(async (q) => {
-      const r = await this.lock(q, input.requestId);
+      const { req: r } = await this.lock(q, input.requestId);
       if (r.tenantId !== input.approver.tenantId) throw new ApprovalError("CROSS_TENANT", "Approver is in another tenant.");
       if (r.status !== "pending") return { err: new ApprovalError("NOT_PENDING", `Request is ${r.status}.`) };
       if (input.presentedHash !== r.changeHash) throw new ApprovalError("HASH_MISMATCH", "Preview changed; approval refused.");
@@ -131,9 +148,12 @@ export class DbApprovalBackend implements ApprovalDecider {
         throw new ApprovalError("NOT_APPROVER", "Caller is not an authorized approver for this request.");
       }
       const status = input.decision === "approve" ? "approved" : "rejected";
+      // Approval opens a fresh submit window; the decision deadline no longer applies.
       const u = await q.query<DbRow>(
-        `UPDATE approval_requests SET status = $2, decided_by = $3, decided_at = now(), updated_at = now() WHERE id = $1 AND status = 'pending' RETURNING ${COLS}`,
-        [r.id, status, input.approver.userId],
+        `UPDATE approval_requests SET status = $2, decided_by = $3, decided_at = now(), updated_at = now(),
+           expires_at = CASE WHEN $2 = 'approved' THEN now() + ($4 || ' milliseconds')::interval ELSE expires_at END
+         WHERE id = $1 AND status = 'pending' RETURNING ${COLS}`,
+        [r.id, status, input.approver.userId, String(this.commitWindowMs)],
       );
       return { req: toReq(u.rows[0]!) };
     });
@@ -143,36 +163,36 @@ export class DbApprovalBackend implements ApprovalDecider {
 
   async beginCommit(input: { requestId: string; caller: BoundIdentity; authz: Authz; idempotencyKey: string }): Promise<BeginCommit> {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey)) throw new ApprovalError("BAD_IDEMPOTENCY_KEY", "idempotencyKey must be 8-128 url-safe chars.");
-    return this.db.tx(async (q) => {
-      const r = await this.lock(q, input.requestId);
+    type Step = BeginCommit | { kind: "expired" } | { kind: "tampered" };
+    // Expiry / tamper status updates must persist, so they are returned (not thrown) from the tx.
+    const step = await this.db.tx(async (q): Promise<Step> => {
+      const { req: r, expired } = await this.lock(q, input.requestId);
       if (r.tenantId !== input.caller.tenantId || r.requesterUserId !== input.caller.userId) throw new ApprovalError("NOT_REQUESTER", "Only the requester can commit, in the same tenant.");
       const led = await q.query<{ state: string; body: unknown; idempotency_key: string }>("SELECT state, body, idempotency_key FROM commit_ledger WHERE request_id = $1", [r.id]);
       const l = led.rows[0];
       if (l) {
-        if (l.state === "ok") return { kind: "replay", result: l.body } as const;
+        if (l.state === "ok") return { kind: "replay", result: l.body };
         if (l.state === "error") throw new ApprovalError("COMMIT_FAILED", "This request already failed in Workday. Start a new request.");
         throw new ApprovalError("COMMIT_UNCERTAIN", "A previous submit is in flight or its result is unknown. An operator must reconcile; it will not be resubmitted automatically.");
       }
       if (r.status !== "approved") throw new ApprovalError("NOT_APPROVED", `Request is ${r.status}.`);
-      if (r.expiresAt < Date.now()) {
+      if (expired) {
         await q.query("UPDATE approval_requests SET status = 'expired', updated_at = now() WHERE id = $1", [r.id]);
-        return { kind: "expired" } as never;
+        return { kind: "expired" };
       }
       const recomputed = hashChange({ tenantId: r.tenantId, requesterUserId: r.requesterUserId, commitTool: r.commitTool, resource: r.resource, change: r.change });
       if (recomputed !== r.changeHash) {
         await q.query("UPDATE approval_requests SET status = 'failed', updated_at = now() WHERE id = $1", [r.id]);
-        return { kind: "tampered" } as never;
+        return { kind: "tampered" };
       }
       assertToolAllowedForUser({ userId: r.requesterUserId, roles: input.authz.roles, toolName: r.commitTool, assignments: input.authz.assignments });
       await q.query("UPDATE approval_requests SET status = 'committing', updated_at = now() WHERE id = $1 AND status = 'approved'", [r.id]);
       await q.query("INSERT INTO commit_ledger (tenant_id, user_id, tool, idempotency_key, request_id, state) VALUES ($1,$2,$3,$4,$5,'in_flight')", [r.tenantId, r.requesterUserId, r.commitTool, input.idempotencyKey, r.id]);
-      return { kind: "execute", request: { ...r, status: "committing" } } as const;
-    }).then((v) => {
-      const k = (v as { kind: string }).kind;
-      if (k === "expired") throw new ApprovalError("EXPIRED", "Approval window expired.");
-      if (k === "tampered") throw new ApprovalError("TAMPERED", "Stored change does not match approved hash.");
-      return v;
+      return { kind: "execute", request: { ...r, status: "committing" } };
     });
+    if (step.kind === "expired") throw new ApprovalError("EXPIRED", "The submit window after approval has expired. Start a new request.");
+    if (step.kind === "tampered") throw new ApprovalError("TAMPERED", "Stored change does not match approved hash.");
+    return step;
   }
 
   async finishCommit(requestId: string, outcome: CommitOutcome): Promise<void> {
@@ -195,7 +215,7 @@ export class DbApprovalBackend implements ApprovalDecider {
   /** Operator decision after reading Workday. Only for unknown / stale committing requests. */
   async resolveUncertain(actor: string, requestId: string, outcome: CommitOutcome): Promise<void> {
     await this.db.tx(async (q) => {
-      const r = await this.lock(q, requestId);
+      const { req: r } = await this.lock(q, requestId);
       const stale = r.status === "committing";
       if (r.status !== "unknown" && !stale) throw new ApprovalError("NOT_UNCERTAIN", `Request is ${r.status}.`);
       await adminAudit(q, actor, "approval.reconcile", { requestId, state: outcome.state });

@@ -6,13 +6,14 @@ import {
 } from "../schemas/common.js";
 import type { AppConfig } from "../config.js";
 import { assertToolEnabled } from "../config.js";
-import { assertToolAllowed, type Role } from "../rbac/index.js";
+import { assertToolAllowedForUser, type AssignmentStore, type Role } from "../rbac/index.js";
 import type { AuditLogger } from "../safety/audit.js";
 import type { PreviewStore } from "../safety/preview-store.js";
 import type { TokenStore } from "../auth/token-store.js";
 import type { PkcePair } from "../auth/oauth.js";
 import { SignInRequiredError } from "../auth/oauth.js";
 import { z } from "zod";
+import { annotationsFor, markRegistered } from "./framework.js";
 import { previewRequestTimeOff } from "../schemas/tools/self-service.js";
 import { createTimeOffPreview } from "./time-off-core.js";
 
@@ -29,10 +30,13 @@ export function registerPreviewRequestTimeOff(
     pendingPkce: Map<string, PkcePair>;
     resolveUserId: () => string;
     resolveUserRoles: () => Role[];
+    /** User grants/denies; denies win over roles (fail closed). */
+    assignments?: AssignmentStore;
   },
 ): void {
   const toolName = "preview_request_time_off";
 
+  markRegistered(server, toolName);
   server.registerTool(
     toolName,
     {
@@ -42,19 +46,14 @@ export function registerPreviewRequestTimeOff(
         "preview token. Call commit_request_time_off with that token and an idempotency key " +
         "only after the user confirms. Who: authenticated worker requesting their own time off. Writes: no.",
       inputSchema: InputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
+      annotations: annotationsFor({ name: toolName, toolClass: "write-preview" }),
     },
     async (args) => {
       const started = Date.now();
       const userId = deps.resolveUserId();
       try {
         assertToolEnabled(deps.config, toolName);
-        assertToolAllowed(deps.resolveUserRoles(), toolName);
+        assertToolAllowedForUser({ userId, roles: deps.resolveUserRoles(), toolName, assignments: deps.assignments });
         const { previewToken, summary } = await createTimeOffPreview(deps, userId, args);
 
         const body = {

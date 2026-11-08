@@ -2,7 +2,7 @@
 /** Integration runtime entrypoint: `npm run serve` (after `npm run build`). */
 import { createPgDb } from "../store/db.js";
 import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
-import { DbReplayGuard } from "../store/repos.js";
+import { pruneExpired } from "../store/repos.js";
 import { createHttpServer } from "../integrations/http.js";
 import { buildRuntime, loadRuntimeConfig } from "./runtime.js";
 
@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: npm run db:migrate`);
   const rt = buildRuntime({ cfg, db });
   const server = createHttpServer(rt.route, { maxBodyBytes: cfg.integrations.slack.maxBodyBytes, log: rt.log });
-  const prune = setInterval(() => void new DbReplayGuard(db).prune().catch(() => {}), 60_000);
+  const prune = setInterval(() => void pruneExpired(db).catch(() => {}), 60_000);
   prune.unref();
   server.listen(cfg.port, () => rt.log({ evt: "listening", port: cfg.port, fixtures: cfg.app.useFixtures, slack: cfg.integrations.slack.enabled, validatedOps: cfg.app.validatedOperations.join(",") }));
   const stop = (sig: string) => {

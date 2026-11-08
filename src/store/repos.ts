@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import type { Db, Queryable } from "./db.js";
 import type { KeyRing } from "./crypto.js";
-import type { BoundIdentity, IdentityResolver } from "../integrations/identity.js";
+import type { BoundIdentity, IdentityResolver, SlackAddress, SlackDirectory } from "../integrations/identity.js";
 import type { ReplayGuard } from "../integrations/slack/verify.js";
 import type { FormSession, FormSessions } from "../integrations/slack/forms.js";
 import type { OAuthTokens } from "../auth/oauth.js";
@@ -24,6 +24,15 @@ export class DbReplayGuard implements ReplayGuard {
   async prune(): Promise<number> {
     return (await this.db.query("DELETE FROM slack_replay WHERE expires_at < now()")).rowCount;
   }
+}
+
+/** Delete expired single-use rows (replay keys, form sessions, OAuth states). Returns rows removed. */
+export async function pruneExpired(db: Queryable): Promise<number> {
+  let n = 0;
+  for (const table of ["slack_replay", "form_sessions", "oauth_states"] as const) {
+    n += (await db.query(`DELETE FROM ${table} WHERE expires_at < now()`)).rowCount;
+  }
+  return n;
 }
 
 export class DbFormSessions implements FormSessions {
@@ -58,7 +67,7 @@ export async function adminAudit(q: Queryable, actor: string, action: string, de
  * active only after that Slack user completes Workday OAuth through the signed link flow.
  * Only active links resolve.
  */
-export class DbIdentityLinks implements IdentityResolver {
+export class DbIdentityLinks implements IdentityResolver, SlackDirectory {
   constructor(private readonly db: Db) {}
   async resolveSlack(teamId: string, userId: string): Promise<BoundIdentity | undefined> {
     const r = await this.db.query<{ tenant_id: string; user_id: string }>(
@@ -67,6 +76,15 @@ export class DbIdentityLinks implements IdentityResolver {
     );
     const x = r.rows[0];
     return x && { tenantId: x.tenant_id, userId: x.user_id };
+  }
+  /** Active link for a tenant user, for notifications only (identity_links_user keeps this unique). */
+  async slackFor(identity: BoundIdentity): Promise<SlackAddress | undefined> {
+    const r = await this.db.query<{ slack_team_id: string; slack_user_id: string }>(
+      "SELECT slack_team_id, slack_user_id FROM identity_links WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'",
+      [identity.tenantId, identity.userId],
+    );
+    const x = r.rows[0];
+    return x && { teamId: x.slack_team_id, userId: x.slack_user_id };
   }
   /** Invited (not yet active) link, used only by the link command. */
   async invited(teamId: string, userId: string): Promise<BoundIdentity | undefined> {

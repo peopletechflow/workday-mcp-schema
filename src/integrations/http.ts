@@ -16,7 +16,9 @@ import { handleSlackEvent, type IntakeSink } from "./slack/intake.js";
 import { handleViewSubmission, type FormSessions } from "./slack/forms.js";
 import { handleApprovalAction } from "./slack/interactions.js";
 import { handleShortcut, handleSlashCommand } from "./slack/commands.js";
-import type { SlackApi } from "./slack/api.js";
+import { withinBudget, type SlackApi } from "./slack/api.js";
+import type { SlackApprovalNotifier } from "./slack/notify.js";
+import { ACK_BUDGET_MS } from "./slack/submit.js";
 import type { ApprovalDecider } from "./approvals/workflow.js";
 import type { ApprovalExecutionService } from "./approvals/execution.js";
 import type { LinkService } from "./link.js";
@@ -31,11 +33,15 @@ export type RouterContext = {
   decider: ApprovalDecider;
   link?: LinkService;
   slackApi?: SlackApi;
+  /** Slack UI delivery (approver DMs, message updates). Absent means no proactive messages. */
+  notifier?: SlackApprovalNotifier;
   commandName: string;
   sink: IntakeSink;
   ready: () => Promise<boolean>;
   log: LogFn;
   nowSec?: number;
+  /** Time allowed for Slack API calls inside an ack (default 2.5 s). */
+  budgetMs?: number;
 };
 
 export type RouteResult = { status: number; contentType?: string; body: string };
@@ -48,7 +54,8 @@ const html = (status: number, message: string): RouteResult => ({
 
 export function createRouter(ctx: RouterContext): (method: string, url: string, rawBody: string, headers: Record<string, string | undefined>) => Promise<RouteResult> {
   const base = { config: ctx.slack, identities: ctx.identities, replay: ctx.replay, nowSec: ctx.nowSec };
-  const cmd = { ...base, sessions: ctx.sessions, service: ctx.service, slackApi: ctx.slackApi, link: ctx.link, commandName: ctx.commandName, log: ctx.log };
+  const cmd = { ...base, sessions: ctx.sessions, service: ctx.service, slackApi: ctx.slackApi, notifier: ctx.notifier, link: ctx.link, commandName: ctx.commandName, budgetMs: ctx.budgetMs, log: ctx.log };
+  const budget = ctx.budgetMs ?? ACK_BUDGET_MS;
   return async (method, url, raw, headers) => {
     const u = new URL(url, "http://local");
     if (method === "GET" && u.pathname === "/healthz") return { status: 200, contentType: "text/plain", body: "ok" };
@@ -81,11 +88,19 @@ export function createRouter(ctx: RouterContext): (method: string, url: string, 
         type = undefined;
       }
       if (type === "view_submission") {
-        const out = await handleViewSubmission(raw, headers, { ...base, sessions: ctx.sessions, service: ctx.service });
+        const out = await handleViewSubmission(raw, headers, { ...base, sessions: ctx.sessions, service: ctx.service, commandName: ctx.commandName });
+        // Tell approvers and the requester before the modal closes; bounded so the ack stays inside 3 s.
+        if (out.status === 200 && out.approval && ctx.notifier) {
+          const d = await withinBudget(ctx.notifier.proposed(out.approval, out.slackUser), budget);
+          ctx.log({ evt: "approval_delivery", req: out.approval.id, ...(d.done ? d.value : { delivered: false, reason: "timeout" }) });
+        }
         return { status: out.status, contentType: "application/json", body: out.body === "" ? "" : JSON.stringify(out.body) };
       }
       if (type === "shortcut") return { status: (await handleShortcut(raw, headers, cmd)).status, body: "" };
-      if (type === "block_actions") return { status: (await handleApprovalAction(raw, headers, { ...base, workflow: ctx.decider })).status, body: "" };
+      if (type === "block_actions") {
+        const out = await handleApprovalAction(raw, headers, { ...base, workflow: ctx.decider, service: ctx.service, notifier: ctx.notifier, commandName: ctx.commandName, budgetMs: ctx.budgetMs, log: ctx.log });
+        return { status: out.status, body: "" };
+      }
       return { status: 400, body: "" };
     }
     return { status: 404, body: "" };
