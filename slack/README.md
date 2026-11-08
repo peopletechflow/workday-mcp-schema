@@ -2,6 +2,8 @@
 
 `slack/app-manifest.json` creates the Slack app this runtime expects. It matches the handlers in `src/integrations/http.ts` and `src/integrations/slack/*` (checked by `check:integrations`).
 
+Bot display name and handle: `workday-custom` (`features.bot_user.display_name`). The app name stays "PeopleTech Flow Workday" and the command stays `/workday`.
+
 ## Before you import
 Replace every `https://REPLACE-WITH-YOUR-PUBLIC-HTTPS-HOST.example.com` with the public HTTPS origin that reaches this server (a deployment, or an HTTPS tunnel to `http://127.0.0.1:8787` for local testing). Slack cannot call `localhost`. Paths stay as they are:
 

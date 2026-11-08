@@ -7,7 +7,7 @@
     "background_color": "#1F3A5F"
   },
   "features": {
-    "bot_user": { "display_name": "PeopleTech Flow Workday", "always_online": false },
+    "bot_user": { "display_name": "workday-custom", "always_online": false },
     "slash_commands": [
       {
         "command": "/workday",
