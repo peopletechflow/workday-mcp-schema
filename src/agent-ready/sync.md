@@ -12,7 +12,7 @@ The seed in `catalog.generated.ts` is built from **public** Workday developer do
 
 - `wid: null` means the WID was not exposed. To fill WIDs, dump ASOR into the generated seed (`--asor`). The merge then picks them up by name. Never type WIDs in by hand from memory.
 - `params` lists only parameters seen during discovery (`contextInstanceId` WID|`"me"`, `search`, `email`, `limit`/`offset`, `organizationType`/subtype). Treat everything else as passthrough/unknown.
-- Every tenant tool needs a role mapping in `src/rbac/agent-ready.ts`. `npm run check:rbac` enforces this.
+- Every tenant tool needs a role mapping in `src/rbac/agent-ready.ts`. `pnpm run check:rbac` enforces this.
 
 ## Required columns (CSV)
 
@@ -64,24 +64,24 @@ Prefer CSV from Explorer for `kind` / product area; use ASOR JSON for authoritat
 
 ```bash
 # CSV only
-npx tsx scripts/sync-agent-ready-catalog.ts --csv path/to/explorer-export.csv
+pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv path/to/explorer-export.csv
 
 # ASOR JSON only
-npx tsx scripts/sync-agent-ready-catalog.ts --asor path/to/asor-dump.json
+pnpm exec tsx scripts/sync-agent-ready-catalog.ts --asor path/to/asor-dump.json
 
 # Merge both (CSV wins on kind/description/productArea; ASOR fills/overrides wid)
-npx tsx scripts/sync-agent-ready-catalog.ts \
+pnpm exec tsx scripts/sync-agent-ready-catalog.ts \
   --csv path/to/explorer-export.csv \
   --asor path/to/asor-dump.json
 
 # Dry-run (print counts, write nothing)
-npx tsx scripts/sync-agent-ready-catalog.ts --csv export.csv --dry-run
+pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv export.csv --dry-run
 ```
 
 Writes `src/agent-ready/catalog.generated.ts`. Then:
 
 ```bash
-npm run typecheck && npm run build && npm run check:rbac
+pnpm run typecheck && pnpm run build && pnpm run check:rbac
 ```
 
 ## What this catalog is not

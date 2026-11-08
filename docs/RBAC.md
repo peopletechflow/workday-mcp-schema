@@ -171,11 +171,11 @@ Enforcement: `assertToolAllowedForUser` / `assertAgentReadyCallAllowedForUser` i
 ## Denial behavior
 - `assertToolAllowed(userRoles, toolName)` throws `RbacDeniedError`. Tools return `{ "error": "PERMISSION_DENIED", "message": "Access denied: '<tool>' requires one of [...]; you have [...]. Ask your Workday security admin ..." }`.
 - The check happens after the kill switch and **before** sign-in or any Workday request. Denials are audited as `result: "denied"` and never pinned to an idempotency key.
-- A tool with no mapping is denied for everyone (fail closed). Startup (`assertRegistryInvariants`) and `npm run check:rbac` also fail.
+- A tool with no mapping is denied for everyone (fail closed). Startup (`assertRegistryInvariants`) and `pnpm run check:rbac` also fail.
 
 ## Customizing for your scale-up
 1. Add or rename roles in `src/rbac/roles.ts` (`ROLES`, `ROLE_DESCRIPTIONS`).
 2. Update `TOOL_PERMISSIONS` for every tool, keeping preview/commit pairs identical.
 3. Map each role to a Workday security group and to the skill's Available To list.
 4. Swap `resolveRolesFromEnv` for a security-group lookup in production.
-5. Run `npm run typecheck && npm run check:rbac`.
+5. Run `pnpm run typecheck && pnpm run check:rbac`.

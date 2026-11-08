@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Admin CLI (audited in admin_audit). Usage: npm run admin -- <command> [--flags]
+ * Admin CLI (audited in admin_audit). Usage: pnpm admin <command> [--flags]
  *   migrate | schema-status | keygen
  *   link-invite --slack-team T.. --slack-user U.. --user-id <id>
  *   link-revoke --slack-team T.. --slack-user U..

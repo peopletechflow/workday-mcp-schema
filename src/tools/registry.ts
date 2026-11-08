@@ -1,6 +1,21 @@
+import type { z } from "zod";
 import * as T from "../schemas/tools/index.js";
 import { TOOL_PERMISSIONS, type Role } from "../rbac/index.js";
-import type { ToolAudience, ToolClass, WorkdaySurface } from "../schemas/tools/contract.js";
+import type { ToolAudience, ToolClass, ToolContract, WorkdaySurface } from "../schemas/tools/contract.js";
+
+type AnyContract = ToolContract<z.ZodRawShape, z.ZodRawShape>;
+
+/**
+ * Schema-first contract for a tool name, or undefined for names outside src/schemas/tools.
+ * Agents read `description` and `input` from here, so the model sees the same text and
+ * parameters a human integrator would, instead of internal build rationale.
+ */
+export function contractFor(name: string): AnyContract | undefined {
+  for (const v of Object.values(T)) {
+    if (v && typeof v === "object" && "name" in v && "input" in v && "toolClass" in v && (v as AnyContract).name === name) return v as AnyContract;
+  }
+  return undefined;
+}
 
 export type RegistryEntry = {
   name: string;

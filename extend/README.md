@@ -13,9 +13,9 @@ This folder mirrors the **Workday Extend** app that hosts our custom agent skill
 
 1. Skills are authored with the **Workday Developer Agent** while it is connected to the tenant. The agent lists the Agent-Ready MCP tools available to the app, and we attach the ones the skill needs.
 2. Once the skill works in the tenant, it is **mirrored here** as Markdown (`extend/skills/<skill>.md`), covering description, tools, security rules, steps, errors and what is not in scope.
-3. The tools it uses go into the Layer-1 catalog (`src/agent-ready/catalog.tenant.ts`) with `source: "tenant-discovered <date> <tenant>"`, and they are mapped to roles in `src/rbac/agent-ready.ts`. `npm run check:rbac` fails if a tenant tool has no mapping.
+3. The tools it uses go into the Layer-1 catalog (`src/agent-ready/catalog.tenant.ts`) with `source: "tenant-discovered <date> <tenant>"`, and they are mapped to roles in `src/rbac/agent-ready.ts`. `pnpm run check:rbac` fails if a tenant tool has no mapping.
 
-WIDs are not exposed in the Developer Agent UI, so mirrored tools carry `wid: null` until an ASOR dump fills them in (`npm run sync:agent-ready -- --asor <dump.json>`). Never invent WIDs.
+WIDs are not exposed in the Developer Agent UI, so mirrored tools carry `wid: null` until an ASOR dump fills them in (`pnpm sync:agent-ready --asor <dump.json>`). Never invent WIDs.
 
 `skills/payroll-viewer-skill.md` and `skills/admin-skill.md` are the verbatim Developer Agent skill texts (the other mirrors are condensed). admin-skill: `ADMIN_SKILL_TOOLS` / `ADMIN_SHARED_TOOLS` / `ADMIN_HARD_REFUSALS` in the catalog, the sensitive field gate in `src/safety/sensitive-fields.ts`, demographics in `src/safety/diversity.ts`. Its tools are in `PAYROLL_VIEWER_SKILL_TOOLS` (`src/agent-ready/catalog.tenant.ts`); RBAC in `src/rbac/agent-ready.ts`, the pay-group proof in `src/rbac/pay-group-scope.ts` and the pay-results shaping rule in `src/safety/pay-results.ts`.
 

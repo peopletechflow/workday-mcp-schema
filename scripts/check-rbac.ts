@@ -1,4 +1,4 @@
-/** Smoke check: every registered tool has an RBAC mapping and enforcement behaves. Run: npm run check:rbac */
+/** Smoke check: every registered tool has an RBAC mapping and enforcement behaves. Run: pnpm run check:rbac */
 import { TOOL_REGISTRY, assertRegistryInvariants } from "../src/tools/registry.js";
 import {
   AGENT_READY_RECIPE_PERMISSIONS,

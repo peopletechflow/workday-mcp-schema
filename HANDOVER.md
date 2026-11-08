@@ -1,13 +1,15 @@
 # Handover
 
 ## State
-- stdio MCP server (developer surface) and production HTTP integration runtime (`npm run serve`).
+- stdio MCP server (developer surface) and production HTTP integration runtime (`pnpm run serve`).
 - Runtime: Postgres state, account linking, entitlements, encrypted tokens, approvals with commit ledger, Slack intake/command/forms/buttons, Notion reads for agents. Offline verified only.
 - Slack UI flow (docs/INTEGRATIONS.md "Slack UI flow"): form -> approver DMs with Approve / Reject -> decision replaces the message and DMs the requester a Submit to Workday button -> commit through the ledger. Slow commits report back through `response_url`. No token refresh inside a Slack ack. Gated by `SLACK_APPROVAL_DELIVERY=explicit`.
 - MCP authorization spec revision 2026-07-28 reviewed against both runtimes: docs/MCP-AUTHORIZATION.md (stdio keeps environment credentials; HTTP runtime is not an MCP endpoint; client-side rules met; checklist for a future HTTP MCP transport).
+- Package manager is pnpm (`packageManager` pin, `pnpm-lock.yaml`, Dockerfile via corepack). `package-lock.json` is gone; do not bring it back.
+- Agent prompts and toolsets follow docs/CONTEXT-ENGINEERING.md (sectioned prompts, contract-driven tool descriptions and schemas, capped tool results, bounded steps). `AGENTS.md` is the short up-front map for coding agents.
 
 ## Verified offline
-`npm run check` (typecheck, check:rbac, check:mcp 11, check:integrations 38, check:durable 26 on PGlite). `CHECK_DATABASE_URL=... npm run check:durable` was last run on PostgreSQL 17 before the Slack UI and hardening changes; re-run it before deploying. Built server booted against Postgres: migrate, admin commands, `/healthz` 200, `/readyz` 200, unsigned Slack 401.
+`pnpm run check` (typecheck, check:rbac, check:mcp 11, check:integrations 38, check:durable 26 on PGlite). `CHECK_DATABASE_URL=... pnpm run check:durable` was last run on PostgreSQL 17 before the Slack UI and hardening changes; re-run it before deploying. Built server booted against Postgres: migrate, admin commands, `/healthz` 200, `/readyz` 200, unsigned Slack 401.
 
 ## Not done (needs access, not code)
 1. Sandbox validation of Workday contracts (docs/SANDBOX-TESTING.md); until then `WORKDAY_VALIDATED_OPERATIONS` stays empty and live commits are refused.

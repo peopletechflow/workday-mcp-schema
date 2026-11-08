@@ -1,6 +1,6 @@
 /**
  * GENERATED / MAINTAINED SEED — do not hand-edit large diffs.
- * Regenerate with: npx tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
+ * Regenerate with: pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
  * or merge ASOR JSON dumps the same way.
  *
  * Seeded from public Workday developer docs only. Workday reports 400+ Agent-Ready

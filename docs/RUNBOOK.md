@@ -1,6 +1,6 @@
 # Runbook: integration runtime
 
-Scope: the HTTP runtime in `src/server/main.ts` (Slack intake, `/workday` command, forms, approvals, OAuth account linking). The stdio MCP server (`npm start`) is separate.
+Scope: the HTTP runtime in `src/server/main.ts` (Slack intake, `/workday` command, forms, approvals, OAuth account linking). The stdio MCP server (`pnpm start`) is separate.
 
 ## Architecture
 
@@ -11,14 +11,14 @@ Scope: the HTTP runtime in `src/server/main.ts` (Slack intake, `/workday` comman
 ## First deploy (sandbox tenant)
 
 ```bash
-npm ci && npm run build
-npm run admin -- keygen            # prints TOKEN_ENCRYPTION_KEY and _ID; store in your secrets manager
+pnpm install --frozen-lockfile && pnpm run build
+pnpm admin keygen            # prints TOKEN_ENCRYPTION_KEY and _ID; store in your secrets manager
 export DATABASE_URL=... TOKEN_ENCRYPTION_KEY=... TOKEN_ENCRYPTION_KEY_ID=... WORKDAY_TENANT=... # see .env.example
-npm run db:migrate
-npm run admin -- policy-set --approvers <approver_user_id>[,<id2>] --actor <you>
-npm run admin -- roles-set --user-id <id> --roles worker_self --actor <you>
-npm run admin -- link-invite --slack-team T... --slack-user U... --user-id <id> --actor <you>
-npm run serve                       # PORT, default 8787
+pnpm run db:migrate
+pnpm admin policy-set --approvers <approver_user_id>[,<id2>] --actor <you>
+pnpm admin roles-set --user-id <id> --roles worker_self --actor <you>
+pnpm admin link-invite --slack-team T... --slack-user U... --user-id <id> --actor <you>
+pnpm run serve                       # PORT, default 8787
 ```
 
 Probes: `GET /healthz` (process), `GET /readyz` (database reachable and schema current). The process refuses to start if the schema is behind; set `DB_MIGRATE_ON_START=true` only if you accept migrations at boot.
@@ -27,11 +27,11 @@ Probes: `GET /healthz` (process), `GET /readyz` (database reachable and schema c
 
 | Task | Command |
 | --- | --- |
-| Schema status | `npm run admin -- schema-status` |
-| Revoke a user (deletes their tokens) | `npm run admin -- link-revoke --slack-team T.. --slack-user U.. --actor <you>` |
-| Change roles / deny a tool | `npm run admin -- roles-set --user-id <id> --roles worker_self --denies tool:commit_request_time_off --actor <you>` |
-| List uncertain commits | `npm run admin -- approvals-list --status reconcile` |
-| Reconcile one | `npm run admin -- reconcile --id apr_... --actor <you>` (reads Workday; marks committed if found) |
+| Schema status | `pnpm admin schema-status` |
+| Revoke a user (deletes their tokens) | `pnpm admin link-revoke --slack-team T.. --slack-user U.. --actor <you>` |
+| Change roles / deny a tool | `pnpm admin roles-set --user-id <id> --roles worker_self --denies tool:commit_request_time_off --actor <you>` |
+| List uncertain commits | `pnpm admin approvals-list --status reconcile` |
+| Reconcile one | `pnpm admin reconcile --id apr_... --actor <you>` (reads Workday; marks committed if found) |
 | Confirm not submitted | add `--confirm-not-submitted` after checking Workday yourself; the user starts a new request |
 | Kill switch | `WORKDAY_DISABLED_TOOLS=commit_request_time_off` and restart, or remove `requestTimeOff.create` from `WORKDAY_VALIDATED_OPERATIONS` |
 | Rotate encryption key | set new `TOKEN_ENCRYPTION_KEY(_ID)`, move old to `TOKEN_ENCRYPTION_KEY_PREVIOUS(_ID)`; tokens re-seal on next refresh; drop the previous key after all users refreshed or relinked |

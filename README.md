@@ -8,9 +8,9 @@ Intended owner: GitHub user **peopletechflow** (private repo).
 
 This repo is layer 3 of the Workday agent stack. Prefer **native Agent-Ready MCP tools** first, then **Custom Agent Actions (Orchestrate)** for tenant-specific process logic. Use this baseline for cross-tenant patterns, preview/commit/idempotency/audit guardrails, or multi-system composition. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Layer 1 catalog:** `src/agent-ready/` seeds/syncs a local catalog of native Agent-Ready tools (name, WID, Basic|Advanced|Prompt, product area). Meta tools `list_agent_ready_tools` / `get_agent_ready_tool` and resource `agent-ready://catalog` document that catalog for local/dev — they do **not** re-implement Workday MCP. The seed is partial (public docs only); refresh with `npm run sync:agent-ready -- --csv <Explorer.csv>` (see `src/agent-ready/sync.md`). Runtime still calls Workday MCP with dynamic schemas. It also includes 152 **tenant-discovered** tools (`src/agent-ready/catalog.tenant.ts`): 13 from [`worker-data-skill`](extend/skills/worker-data-skill.md), 34 from [`self-service-skill`](extend/skills/self-service-skill.md), 41 from [`manager-actions-skill`](extend/skills/manager-actions-skill.md), 21 from [`hr-partner-skill`](extend/skills/hr-partner-skill.md) 22 from [`payroll-viewer-skill`](extend/skills/payroll-viewer-skill.md) (read-only) and 21 from [`admin-skill`](extend/skills/admin-skill.md) (tenant-wide read, self-only writes), with role scopes in `src/rbac/agent-ready.ts`. The merged catalog has 158 tools: 125 reads and 33 writes. Native self-service writes run only through the preview → confirm guard in `src/safety/native-write-guard.ts`.
+**Layer 1 catalog:** `src/agent-ready/` seeds/syncs a local catalog of native Agent-Ready tools (name, WID, Basic|Advanced|Prompt, product area). Meta tools `list_agent_ready_tools` / `get_agent_ready_tool` and resource `agent-ready://catalog` document that catalog for local/dev — they do **not** re-implement Workday MCP. The seed is partial (public docs only); refresh with `pnpm sync:agent-ready --csv <Explorer.csv>` (see `src/agent-ready/sync.md`). Runtime still calls Workday MCP with dynamic schemas. It also includes 152 **tenant-discovered** tools (`src/agent-ready/catalog.tenant.ts`): 13 from [`worker-data-skill`](extend/skills/worker-data-skill.md), 34 from [`self-service-skill`](extend/skills/self-service-skill.md), 41 from [`manager-actions-skill`](extend/skills/manager-actions-skill.md), 21 from [`hr-partner-skill`](extend/skills/hr-partner-skill.md) 22 from [`payroll-viewer-skill`](extend/skills/payroll-viewer-skill.md) (read-only) and 21 from [`admin-skill`](extend/skills/admin-skill.md) (tenant-wide read, self-only writes), with role scopes in `src/rbac/agent-ready.ts`. The merged catalog has 158 tools: 125 reads and 33 writes. Native self-service writes run only through the preview → confirm guard in `src/safety/native-write-guard.ts`.
 
-Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`) before any Workday call. The roles map to Workday security groups and to the ASOR skill's Available To list. Enterprise Layer-3 also supports **lowest-level user permission assignments** (`tool:<name>` grants/denies via `WORKDAY_USER_GRANTS` / `WORKDAY_USER_DENIES` or `WORKDAY_RBAC_ASSIGNMENTS_PATH`) so you can assign least privilege per user beyond coarse roles. In dev, set roles with `WORKDAY_USER_ROLES`. Run `npm run check:rbac` to verify that every tool is mapped. See [docs/RBAC.md](docs/RBAC.md).
+Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`) before any Workday call. The roles map to Workday security groups and to the ASOR skill's Available To list. Enterprise Layer-3 also supports **lowest-level user permission assignments** (`tool:<name>` grants/denies via `WORKDAY_USER_GRANTS` / `WORKDAY_USER_DENIES` or `WORKDAY_RBAC_ASSIGNMENTS_PATH`) so you can assign least privilege per user beyond coarse roles. In dev, set roles with `WORKDAY_USER_ROLES`. Run `pnpm run check:rbac` to verify that every tool is mapped. See [docs/RBAC.md](docs/RBAC.md).
 
 **AI SDK:** all model calls go through `src/ai/` (Vercel AI SDK `ai` + `@ai-sdk/mcp`, AI Gateway via `AI_GATEWAY_API_KEY`). Use `createEnterpriseAgent` for a ToolLoopAgent that wraps Layer-3 tools with the same RBAC. Leave the gateway key unset (or set `WORKDAY_AI_DISABLED=1`) in CI/fixtures so no LLM spend occurs.
 
@@ -100,13 +100,13 @@ Workday HTTP is behind `WorkdayClient`. Default `WORKDAY_USE_FIXTURES=true` uses
 cp .env.example .env
 # edit .env — sandbox tenant + OAuth client placeholders
 
-npm install
-npm run typecheck
-npm run build
-npm start                 # stdio MCP server
+pnpm install
+pnpm run typecheck
+pnpm run build
+pnpm start                 # stdio MCP server
 
 # or without build:
-npm run dev
+pnpm run dev
 ```
 
 ### Example MCP client config (stdio)
@@ -140,8 +140,8 @@ npm run dev
 Optional, disabled by default. Slack conversation intake (signed, allowlisted, no auto replies), a `/workday` slash command and shortcut that open a Block Kit time-off form, Slack approve/reject buttons, `/workday submit` to commit an approved request through the existing guarded time-off commit, Notion knowledge reads for agents limited by a server policy, and a human approval workflow for writes. The agent gets read tools from the caller's permissions and can only propose writes; it cannot commit or approve. Details, security model, and what is fixture-tested vs not live-verified: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 ```bash
-npm run check                # typecheck + rbac + integrations + durable runtime checks (offline)
-npm run build && npm run db:migrate && npm run serve   # production runtime, see docs/RUNBOOK.md
+pnpm run check                # typecheck + rbac + integrations + durable runtime checks (offline)
+pnpm run build && pnpm run db:migrate && pnpm run serve   # production runtime, see docs/RUNBOOK.md
 ```
 
 Production runtime: Postgres state, admin-invited account linking through Workday OAuth, audited role entitlements, encrypted per-user tokens, commit ledger with no automatic resubmits, `/healthz` and `/readyz`. Live Workday operations are blocked until validated in your sandbox: [docs/SANDBOX-TESTING.md](docs/SANDBOX-TESTING.md). Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md).

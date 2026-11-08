@@ -1,7 +1,7 @@
 /**
  * Offline checks for the production runtime: real composition (buildRuntime + router) on Postgres
  * (PGlite by default, real Postgres when CHECK_DATABASE_URL is set), with Workday, Slack, and OAuth
- * provider fakes. Run: npm run check:durable
+ * provider fakes. Run: pnpm run check:durable
  */
 import assert from "node:assert/strict";
 import type { Db } from "../src/store/db.js";

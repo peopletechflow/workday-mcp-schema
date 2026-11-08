@@ -1,4 +1,4 @@
-/** Offline contract checks for Slack, Notion, approvals, and the integration agent toolset. Run: npm run check:integrations */
+/** Offline contract checks for Slack, Notion, approvals, and the integration agent toolset. Run: pnpm run check:integrations */
 import assert from "node:assert/strict";
 import {
   ApprovalError,

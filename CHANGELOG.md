@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed (pnpm, agent context)
+- Package manager is pnpm: `packageManager` pinned in package.json (corepack), `pnpm-lock.yaml` committed, `package-lock.json` removed, Dockerfile installs with `corepack enable` and `pnpm install --frozen-lockfile`, docs and code comments use `pnpm run ...` and `pnpm admin ...`. `AGENTS.md` says never to add `package-lock.json`.
+- Agent context follows Anthropic's "Effective context engineering for AI agents" (docs/CONTEXT-ENGINEERING.md): both system prompts are sectioned (`<background>`, `<security_rules>` or `<rules>`, `<tool_guidance>`, `<output>`, `<examples>`) with three canonical examples instead of a rule list; tool descriptions and input schemas come from the schema-first contracts through `contractFor(name)` instead of internal `buildReason` text and untyped records; `wrapUntrusted` caps results at `MAX_TOOL_RESULT_CHARS` and tells the model to narrow the query; agent runs are bounded with `stepCountIs` (`MAX_AGENT_STEPS` 8, `MAX_ENTERPRISE_AGENT_STEPS` 10).
+- `AGENTS.md` rewritten as a short up-front map (invariants, check command, "where to look" table) that points at files for just-in-time reading.
+
 ### Changed (Slack UI and ack performance)
 - Approval lifecycle runs inside Slack: a form submission DMs each assigned approver (Approve / Reject buttons, requester mention, decision deadline) and sends the requester a receipt; a decision replaces the approver's message and DMs the requester, with a "Submit to Workday" button when approved; Submit commits through `ApprovalExecutionService.commitApproved` with the requester's token and the ledger. `SLACK_APPROVAL_DELIVERY=explicit` gates the DMs; `SLACK_APPROVAL_CHANNEL_ID` is now a fallback only. `src/integrations/slack/notify.ts` (`SlackApprovalNotifier`), `interactions.ts`, new `submit.ts`.
 - Slow commits no longer sit inside the Slack ack: the ack says "Submitting" after the 2.5 s budget and the result replaces it through the interaction's `response_url` (command and button). `response_url` is accepted only on `https://hooks.slack.com/`.

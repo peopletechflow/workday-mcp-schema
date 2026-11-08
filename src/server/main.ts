@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Integration runtime entrypoint: `npm run serve` (after `npm run build`). */
+/** Integration runtime entrypoint: `pnpm run serve` (after `pnpm run build`). */
 import { createPgDb } from "../store/db.js";
 import { migrate, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
 import { pruneExpired } from "../store/repos.js";
@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const db = createPgDb(cfg.databaseUrl);
   if (cfg.migrateOnStart) await migrate(db);
   const v = await schemaVersion(db).catch(() => 0);
-  if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: npm run db:migrate`);
+  if (v < LATEST_SCHEMA_VERSION) throw new Error(`Database schema ${v} < ${LATEST_SCHEMA_VERSION}. Run: pnpm run db:migrate`);
   const rt = buildRuntime({ cfg, db });
   const server = createHttpServer(rt.route, { maxBodyBytes: cfg.integrations.slack.maxBodyBytes, log: rt.log });
   const prune = setInterval(() => void pruneExpired(db).catch(() => {}), 60_000);

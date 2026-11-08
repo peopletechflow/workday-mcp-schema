@@ -3,7 +3,7 @@
  * transport. Covers RBAC denies on the original time-off tools, the production-tenant guard,
  * the token-store key requirement, commit ordering around sign-in, audit redaction, tool
  * annotations, pending-sign-in expiry, the loopback OAuth callback, and refresh failures.
- * Run: npm run check:mcp
+ * Run: pnpm run check:mcp
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";

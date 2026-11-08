@@ -1,6 +1,6 @@
 # Slack and Notion integrations: architecture and security
 
-Status: production runtime implemented (`src/server/main.ts`) with Postgres state, account linking, entitlements, and a commit ledger. Covered by offline checks (`npm run check`); never run against a live Slack workspace, Notion workspace, or Workday tenant. Live Workday operations stay blocked until validated in a sandbox ([SANDBOX-TESTING.md](./SANDBOX-TESTING.md)). Operations: [RUNBOOK.md](./RUNBOOK.md).
+Status: production runtime implemented (`src/server/main.ts`) with Postgres state, account linking, entitlements, and a commit ledger. Covered by offline checks (`pnpm run check`); never run against a live Slack workspace, Notion workspace, or Workday tenant. Live Workday operations stay blocked until validated in a sandbox ([SANDBOX-TESTING.md](./SANDBOX-TESTING.md)). Operations: [RUNBOOK.md](./RUNBOOK.md).
 
 See also: [ARCHITECTURE.md](./ARCHITECTURE.md), [RBAC.md](./RBAC.md), [README](../README.md).
 
@@ -90,4 +90,4 @@ Not verified: a real Slack app, real Notion API responses, real model behavior, 
 - Intake keeps only metadata; there is no conversation store or autonomous agent loop by design.
 - Agent and API proposals are not delivered to Slack; only form submissions are. Approver DMs show the requester's Slack mention (from the active link), not a Workday display name.
 - A requester whose Submit message was lost (for example Slack DM failed) still has `/workday submit apr_...`.
-- The stdio MCP server (`npm start`) still uses its file token store and in-memory preview store; it is a single-user developer surface, not the production runtime.
+- The stdio MCP server (`pnpm start`) still uses its file token store and in-memory preview store; it is a single-user developer surface, not the production runtime.
