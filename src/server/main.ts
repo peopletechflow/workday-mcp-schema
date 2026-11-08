@@ -19,8 +19,11 @@ async function main(): Promise<void> {
   server.listen(cfg.port, () => rt.log({ evt: "listening", port: cfg.port, fixtures: cfg.app.useFixtures, slack: cfg.integrations.slack.enabled, validatedOps: cfg.app.validatedOperations.join(",") }));
   const stop = (sig: string) => {
     rt.log({ evt: "shutdown", sig });
-    server.close(() => void db.close().finally(() => process.exit(0)));
-    setTimeout(() => process.exit(1), 10_000).unref();
+    // Stop accepting requests, let post-ack Slack work finish (each task is time-bounded), then close the pool.
+    server.close(() => void rt.background.drain(8_000).then((left) => {
+      if (left) rt.log({ evt: "shutdown_background_abandoned", tasks: left });
+    }).finally(() => void db.close().finally(() => process.exit(0))));
+    setTimeout(() => process.exit(1), 25_000).unref();
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));

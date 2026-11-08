@@ -19,7 +19,9 @@ import { handleShortcut, handleSlashCommand } from "./slack/commands.js";
 import { withinBudget, type SlackApi } from "./slack/api.js";
 import type { SlackApprovalNotifier } from "./slack/notify.js";
 import { ACK_BUDGET_MS } from "./slack/submit.js";
-import type { ApprovalDecider } from "./approvals/workflow.js";
+import type { ApprovalDecider, ApprovalRequest } from "./approvals/workflow.js";
+import type { SlackAddress } from "./identity.js";
+import type { BackgroundTasks } from "./background.js";
 import type { ApprovalExecutionService } from "./approvals/execution.js";
 import type { LinkService } from "./link.js";
 import type { LogFn } from "../observability/log.js";
@@ -40,6 +42,8 @@ export type RouterContext = {
   ready: () => Promise<boolean>;
   log: LogFn;
   nowSec?: number;
+  /** Post-ack work runner (bounded, drained on shutdown). Absent: notifications use a bounded wait. */
+  background?: BackgroundTasks;
   /** Time allowed for Slack API calls inside an ack (default 2.5 s). */
   budgetMs?: number;
 };
@@ -88,12 +92,37 @@ export function createRouter(ctx: RouterContext): (method: string, url: string, 
         type = undefined;
       }
       if (type === "view_submission") {
-        const out = await handleViewSubmission(raw, headers, { ...base, sessions: ctx.sessions, service: ctx.service, commandName: ctx.commandName });
-        // Tell approvers and the requester before the modal closes; bounded so the ack stays inside 3 s.
-        if (out.status === 200 && out.approval && ctx.notifier) {
-          const d = await withinBudget(ctx.notifier.proposed(out.approval, out.slackUser), budget);
-          ctx.log({ evt: "approval_delivery", req: out.approval.id, ...(d.done ? d.value : { delivered: false, reason: "timeout" }) });
-        }
+        const bg = ctx.background;
+        const deliver = (approval: ApprovalRequest, slackUser?: SlackAddress) => {
+          if (!ctx.notifier) return;
+          const notifier = ctx.notifier;
+          const send = async () => {
+            const d = await notifier.proposed(approval, slackUser);
+            ctx.log({ evt: "approval_delivery", req: approval.id, ...d });
+          };
+          // Notifications never delay the ack. Without a background runner they still get a
+          // bounded wait so nothing runs unowned.
+          if (bg) bg.run("approval_delivery", send, { req: approval.id });
+          else return withinBudget(send(), budget);
+        };
+        const out = await handleViewSubmission(raw, headers, {
+          ...base,
+          sessions: ctx.sessions,
+          service: ctx.service,
+          commandName: ctx.commandName,
+          budgetMs: bg ? budget : undefined,
+          defer: bg ? (label, task, fields) => bg.run(label, task, fields) : undefined,
+          onLate: async (o, slackUser) => {
+            if ("approval" in o) {
+              ctx.log({ evt: "form_late_created", req: o.approval.id });
+              if (ctx.notifier) await ctx.notifier.proposed(o.approval, slackUser).then((d) => ctx.log({ evt: "approval_delivery", req: o.approval.id, ...d }));
+            } else if (ctx.notifier) {
+              await ctx.notifier.notice(slackUser, o.errorText);
+            }
+          },
+          log: ctx.log,
+        });
+        if (out.status === 200 && out.approval) await deliver(out.approval, out.slackUser);
         return { status: out.status, contentType: "application/json", body: out.body === "" ? "" : JSON.stringify(out.body) };
       }
       if (type === "shortcut") return { status: (await handleShortcut(raw, headers, cmd)).status, body: "" };

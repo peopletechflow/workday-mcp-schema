@@ -88,7 +88,14 @@ export class DbApprovalBackend implements ApprovalDecider {
     return p;
   }
 
-  async propose(input: { requester: BoundIdentity; authz: Authz; commitTool: string; resource: string; change: Record<string, unknown>; summary: string; source: ApprovalRequest["source"] }): Promise<ApprovalRequest> {
+  async propose(input: { requester: BoundIdentity; authz: Authz; commitTool: string; resource: string; change: Record<string, unknown>; summary: string; source: ApprovalRequest["source"];
+    /**
+     * Single-use claim run inside the same transaction just before the insert (for example a
+     * Slack form nonce). False means already used: nothing is created. A later failure rolls
+     * the claim back, so the form stays usable.
+     */
+    claim?: (q: Queryable) => Promise<boolean>;
+  }): Promise<ApprovalRequest> {
     const entry = TOOL_REGISTRY.find((t) => t.name === input.commitTool);
     if (!entry || entry.toolClass !== "write-commit") throw new ApprovalError("NOT_A_WRITE", "Only registered commit tools can be proposed.");
     assertToolAllowedForUser({ userId: input.requester.userId, roles: input.authz.roles, toolName: input.commitTool, assignments: input.authz.assignments });
@@ -103,6 +110,7 @@ export class DbApprovalBackend implements ApprovalDecider {
         await q.query("UPDATE approval_policies SET rotation_counter = rotation_counter + 1 WHERE tenant_id = $1 AND commit_tool = $2", [tenantId, input.commitTool]);
         eligible = [eligible[i % eligible.length]!];
       }
+      if (input.claim && !(await input.claim(q))) throw new ApprovalError("FORM_USED", "This form was already submitted.");
       const id = `apr_${randomBytes(16).toString("base64url")}`;
       const hash = hashChange({ tenantId, requesterUserId: userId, commitTool: input.commitTool, resource: input.resource, change });
       const r = await q.query<DbRow>(
@@ -161,6 +169,28 @@ export class DbApprovalBackend implements ApprovalDecider {
     return (out as { req: ApprovalRequest }).req;
   }
 
+  /**
+   * Read-only pre-check before any token work: ownership, tenant, and permission are checked
+   * BEFORE a stored ledger result is disclosed. A finished commit is returned without touching
+   * the OAuth provider; a failed or uncertain one throws; otherwise the caller may proceed to
+   * fetch a token and call beginCommit (which re-checks everything under the row lock).
+   */
+  async lookupCommit(input: { requestId: string; caller: BoundIdentity; authz: Authz }): Promise<{ kind: "replay"; result: unknown } | { kind: "proceed" }> {
+    const r = await this.db.query<{ tenant_id: string; requester_user_id: string; commit_tool: string; state: string | null; body: unknown }>(
+      `SELECT a.tenant_id, a.requester_user_id, a.commit_tool, l.state, l.body
+         FROM approval_requests a LEFT JOIN commit_ledger l ON l.request_id = a.id WHERE a.id = $1`,
+      [input.requestId],
+    );
+    const x = r.rows[0];
+    if (!x) throw new ApprovalError("NOT_FOUND", "Unknown approval request.");
+    if (x.tenant_id !== input.caller.tenantId || x.requester_user_id !== input.caller.userId) throw new ApprovalError("NOT_REQUESTER", "Only the requester can commit, in the same tenant.");
+    assertToolAllowedForUser({ userId: x.requester_user_id, roles: input.authz.roles, toolName: x.commit_tool, assignments: input.authz.assignments });
+    if (x.state === "ok") return { kind: "replay", result: x.body };
+    if (x.state === "error") throw new ApprovalError("COMMIT_FAILED", "This request already failed in Workday. Start a new request.");
+    if (x.state) throw new ApprovalError("COMMIT_UNCERTAIN", "A previous submit is in flight or its result is unknown. An operator must reconcile; it will not be resubmitted automatically.");
+    return { kind: "proceed" };
+  }
+
   async beginCommit(input: { requestId: string; caller: BoundIdentity; authz: Authz; idempotencyKey: string }): Promise<BeginCommit> {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey)) throw new ApprovalError("BAD_IDEMPOTENCY_KEY", "idempotencyKey must be 8-128 url-safe chars.");
     type Step = BeginCommit | { kind: "expired" } | { kind: "tampered" };
@@ -168,6 +198,8 @@ export class DbApprovalBackend implements ApprovalDecider {
     const step = await this.db.tx(async (q): Promise<Step> => {
       const { req: r, expired } = await this.lock(q, input.requestId);
       if (r.tenantId !== input.caller.tenantId || r.requesterUserId !== input.caller.userId) throw new ApprovalError("NOT_REQUESTER", "Only the requester can commit, in the same tenant.");
+      // Permission is checked before a stored result is disclosed (revoked roles cannot read it).
+      assertToolAllowedForUser({ userId: r.requesterUserId, roles: input.authz.roles, toolName: r.commitTool, assignments: input.authz.assignments });
       const led = await q.query<{ state: string; body: unknown; idempotency_key: string }>("SELECT state, body, idempotency_key FROM commit_ledger WHERE request_id = $1", [r.id]);
       const l = led.rows[0];
       if (l) {
@@ -185,7 +217,6 @@ export class DbApprovalBackend implements ApprovalDecider {
         await q.query("UPDATE approval_requests SET status = 'failed', updated_at = now() WHERE id = $1", [r.id]);
         return { kind: "tampered" };
       }
-      assertToolAllowedForUser({ userId: r.requesterUserId, roles: input.authz.roles, toolName: r.commitTool, assignments: input.authz.assignments });
       await q.query("UPDATE approval_requests SET status = 'committing', updated_at = now() WHERE id = $1 AND status = 'approved'", [r.id]);
       await q.query("INSERT INTO commit_ledger (tenant_id, user_id, tool, idempotency_key, request_id, state) VALUES ($1,$2,$3,$4,$5,'in_flight')", [r.tenantId, r.requesterUserId, r.commitTool, input.idempotencyKey, r.id]);
       return { kind: "execute", request: { ...r, status: "committing" } };

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed (PR #1 review)
+- Slack form submissions no longer wait for approver DMs before the ack. Notifications run after the ack in a bounded background runner (`src/integrations/background.ts`: 20 s per task, at most 200 in flight, failures logged) that the server drains on shutdown before closing the pool. If creating the approval itself outruns the 2.5 s budget, the ack updates the modal to "Submitting" and the outcome (receipt with request id, or the error text) is DMed to the requester afterwards.
+- The form nonce is now consumed in the same transaction that creates the approval (`propose({ claim })`). A failure rolls the claim back so the form stays usable, and a second submit of the same form cannot create a second approval (it gets "This form was already submitted").
+- `commitApproved` checks requester, tenant and permission with a read-only `lookupCommit` before any token work. A finished commit is returned from the ledger without refreshing or re-linking the Workday token; a non-requester is refused without a token fetch; a revoked role or another tenant cannot read a stored result (`beginCommit` now also checks permission before a replay). New executions fetch the token with no approval row lock held, then `beginCommit` re-checks and claims as before.
+
 ### Changed (pnpm, agent context)
 - Package manager is pnpm: `packageManager` pinned in package.json (corepack), `pnpm-lock.yaml` committed, `package-lock.json` removed, Dockerfile installs with `corepack enable` and `pnpm install --frozen-lockfile`, docs and code comments use `pnpm run ...` and `pnpm admin ...`. `AGENTS.md` says never to add `package-lock.json`.
 - Agent context follows Anthropic's "Effective context engineering for AI agents" (docs/CONTEXT-ENGINEERING.md): both system prompts are sectioned (`<background>`, `<security_rules>` or `<rules>`, `<tool_guidance>`, `<output>`, `<examples>`) with three canonical examples instead of a rule list; tool descriptions and input schemas come from the schema-first contracts through `contractFor(name)` instead of internal `buildReason` text and untyped records; `wrapUntrusted` caps results at `MAX_TOOL_RESULT_CHARS` and tells the model to narrow the query; agent runs are bounded with `stepCountIs` (`MAX_AGENT_STEPS` 8, `MAX_ENTERPRISE_AGENT_STEPS` 10).

@@ -17,6 +17,7 @@ import { ApprovalExecutionService, parseTypeMap } from "../integrations/approval
 import { LinkService } from "../integrations/link.js";
 import { createRouter } from "../integrations/http.js";
 import { createHttpSlackApi, type SlackApi } from "../integrations/slack/api.js";
+import { BackgroundTasks } from "../integrations/background.js";
 import { SlackApprovalNotifier } from "../integrations/slack/notify.js";
 import type { IntakeSink, IntakeRecord } from "../integrations/slack/intake.js";
 import { createLogger, type LogFn } from "../observability/log.js";
@@ -121,6 +122,7 @@ export function buildRuntime(opts: {
   const link = new LinkService({ db, config: cfg.app, keys, links, tokens, fetchImpl: opts.fetchImpl });
   const slackApi = opts.slackApi ?? (cfg.integrations.slack.botToken ? createHttpSlackApi(cfg.integrations.slack.botToken) : undefined);
   const notifier = new SlackApprovalNotifier({ config: cfg.integrations.slack, api: slackApi, directory: links, commandName: cfg.commandName, log });
+  const background = new BackgroundTasks({ log });
   const ready = async () => (await schemaVersion(db)) >= LATEST_SCHEMA_VERSION;
   const route = createRouter({
     slack: cfg.integrations.slack,
@@ -132,6 +134,7 @@ export function buildRuntime(opts: {
     link,
     slackApi,
     notifier,
+    background,
     commandName: cfg.commandName,
     budgetMs: opts.budgetMs,
     sink: opts.sink ?? metadataOnlySink(log),
@@ -139,5 +142,5 @@ export function buildRuntime(opts: {
     log,
     nowSec: opts.nowSec,
   });
-  return { route, service, backend, links, entitlements, tokens, link, keys, client, log, ready, notifier };
+  return { route, service, backend, links, entitlements, tokens, link, keys, client, log, ready, notifier, background };
 }

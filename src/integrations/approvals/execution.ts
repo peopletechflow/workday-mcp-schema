@@ -5,7 +5,8 @@
  *   exact Workday payload stored in the approval (hash bound to tenant, requester, tool, target).
  *   Requires the requester to have a linked Workday token (no anonymous previews).
  * commitApproved: caller identity from a verified channel only; the executor is fixed here.
- *   beginCommit (row lock + ledger) -> requester's own token -> duplicate check -> submit ->
+ *   lookupCommit (read-only: owner, tenant, RBAC, finished ledger result) -> requester's own
+ *   token (new executions only, no row lock held) -> beginCommit (row lock + ledger) -> duplicate check -> submit ->
  *   finishCommit. Definitive Workday 4xx -> failed. Timeout / 5xx / no id -> unknown (never
  *   auto-resubmitted). Contract-unvalidated operations fail before any state change.
  */
@@ -20,6 +21,7 @@ import { buildRequestTimeOffBody, ContractNotValidatedError, WorkdayApiError, Wo
 import { LinkRequiredError, type AccessTokenProvider } from "../../auth/user-tokens.js";
 import type { TimeOffRequestInput } from "../../workday/types.js";
 import type { LogFn } from "../../observability/log.js";
+import type { Queryable } from "../../store/db.js";
 
 export const COMMIT_TOOL = "commit_request_time_off";
 export const PREVIEW_TOOL = "preview_request_time_off";
@@ -93,7 +95,12 @@ export class ApprovalExecutionService {
     return { authz, willSubmit };
   }
 
-  async proposeTimeOff(requester: BoundIdentity, form: FormTimeOff, source: ApprovalRequest["source"]): Promise<ApprovalRequest> {
+  async proposeTimeOff(
+    requester: BoundIdentity,
+    form: FormTimeOff,
+    source: ApprovalRequest["source"],
+    opts: { claim?: (q: Queryable) => Promise<boolean> } = {},
+  ): Promise<ApprovalRequest> {
     const { authz, willSubmit } = await this.checkTimeOff(requester, form);
     const summary = `Time off ${form.timeOffType} ${form.startDate} to ${form.endDate} (${form.quantity} days)`;
     const req = await this.d.backend.propose({
@@ -104,6 +111,7 @@ export class ApprovalExecutionService {
       change: { kind: "request_time_off", willSubmit },
       summary,
       source,
+      ...(opts.claim ? { claim: opts.claim } : {}),
     });
     this.d.log?.({ evt: "approval.proposed", req: req.id, source });
     return req;
@@ -113,9 +121,13 @@ export class ApprovalExecutionService {
     this.assertTenant(caller);
     this.d.assertCommitContract?.();
     const authz = await this.d.authzFor(caller);
-    // Resolve the caller's token before claiming the request. A missing link or an outage then
-    // leaves the request 'approved', so the user can re-link / retry without a new approval.
-    // beginCommit only lets the requester commit, so this is the requester's token.
+    // 1. Read-only check: requester, tenant and permission first; a finished commit is returned
+    //    from the ledger without refreshing or re-linking the Workday token.
+    const seen = await this.d.backend.lookupCommit({ requestId, caller, authz });
+    if (seen.kind === "replay") return seen.result;
+    // 2. New execution only: resolve the requester's token with no approval row lock held. A
+    //    missing link or an outage leaves the request 'approved' for a re-link / retry.
+    // 3. beginCommit re-checks everything under the row lock and claims the ledger (races replay).
     const token = await this.d.accessToken(caller.userId);
     const begun = await this.d.backend.beginCommit({ requestId, caller, authz, idempotencyKey });
     if (begun.kind === "replay") return begun.result;

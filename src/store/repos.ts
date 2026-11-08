@@ -53,8 +53,8 @@ export class DbFormSessions implements FormSessions {
     const x = r.rows[0];
     return x && { slackTeamId: x.slack_team_id, slackUserId: x.slack_user_id, identity: { tenantId: x.tenant_id, userId: x.user_id }, kind: x.kind, expiresAt: Number(x.exp) };
   }
-  async consume(nonce: string): Promise<boolean> {
-    return (await this.db.query("DELETE FROM form_sessions WHERE nonce = $1 AND expires_at > now()", [nonce])).rowCount === 1;
+  async consume(nonce: string, q: Queryable = this.db): Promise<boolean> {
+    return (await q.query("DELETE FROM form_sessions WHERE nonce = $1 AND expires_at > now()", [nonce])).rowCount === 1;
   }
 }
 

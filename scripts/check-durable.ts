@@ -17,6 +17,7 @@ import { durableAccessTokens, LinkRequiredError, TokenRefreshUnavailableError } 
 import { buildIntegrationToolset } from "../src/ai/integration-agent.js";
 import type { TimeOffRequestInput, TimeOffRequestResult } from "../src/workday/types.js";
 import { testDb } from "./lib/test-db.js";
+import { BackgroundTasks } from "../src/integrations/background.js";
 import { KEY, RESPONSE_URL, SECRET, TEAM, baseEnv, button, cmdBody, fakeSlack, instance, seed, signed, slackText, submission, submitButton, type Instance } from "./lib/harness.js";
 
 let passed = 0;
@@ -456,6 +457,7 @@ await check("Slack UI lifecycle: form -> approver DMs + requester receipt -> App
   const nonce = (slack.calls[0]!.view as { private_metadata: string }).private_metadata;
   const vs = submission(nonce, good);
   assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body).response_action, "clear");
+  await rt.background.drain(); // approver DMs run after the ack
   const [req] = await rt.backend.list("acme");
   assert.ok(req && req.status === "pending");
   // Policy approvers: mgr, alice, hr. Alice is the requester, so DMs go to mgr and hr; alice gets a receipt.
@@ -545,6 +547,190 @@ await check("Slack ack paths never call the Workday token endpoint: an expired a
   await rt.tokens.delete("alice");
   const vs2 = submission(nonce, good);
   assert.equal((await rt.route("POST", "/slack/interactions", vs2, signed(vs2))).status, 403, "nonce already consumed");
+});
+
+/** Db wrapper that delays (or fails once) statements matching `re`, inside and outside transactions. */
+function slowDb(db: Db, re: RegExp, o: { delayMs?: number; failOnce?: boolean } = {}): Db {
+  let failed = false;
+  const wrap = (q: Pick<Db, "query">) => ({
+    query: (async (sql: string, params?: unknown[]) => {
+      if (re.test(sql)) {
+        if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
+        if (o.failOnce && !failed) {
+          failed = true;
+          throw new Error("injected database failure");
+        }
+      }
+      return q.query(sql, params as never);
+    }) as Db["query"],
+  });
+  return { ...db, query: wrap(db).query, tx: (fn) => db.tx((q) => fn(wrap(q) as typeof q)) } as Db;
+}
+async function openForm(rt: Instance, slack: ReturnType<typeof fakeSlack>): Promise<string> {
+  const c = cmdBody();
+  await rt.route("POST", "/slack/commands", c, signed(c));
+  return (slack.calls.at(-1)!.view as { private_metadata: string }).private_metadata;
+}
+function slowSlack(delayMs: number) {
+  const s = fakeSlack();
+  const post = s.api.postMessage.bind(s.api);
+  s.api.postMessage = async (...a) => (await new Promise((r) => setTimeout(r, delayMs)), post(...a));
+  return s;
+}
+
+await check("form ack: slow Slack DMs never delay the ack; one approval; DMs delivered after the ack", async () => {
+  const db = await seeded();
+  const slack = slowSlack(400);
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 150, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  const t0 = Date.now();
+  const out = await rt.route("POST", "/slack/interactions", vs, signed(vs));
+  const ackMs = Date.now() - t0;
+  assert.equal(JSON.parse(out.body).response_action, "clear");
+  assert.ok(ackMs < 300, `ack waited for Slack DMs (${ackMs} ms)`);
+  assert.equal(slack.posts.length < 3, true, "DMs still in flight at ack time");
+  assert.equal(await rt.background.drain(), 0);
+  assert.deepEqual(slack.posts.map((p) => p.channel).sort(), ["U0ALICE", "U0HR", "U0MGR"]);
+  assert.equal((await rt.backend.list("acme")).length, 1);
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"approval_delivery"') && l.includes('"recipients":2')));
+});
+
+await check("form ack: slow database acks with a 'submitting' view, finishes in the background, and a resubmit of the same form cannot create a second approval", async () => {
+  const base = await seeded();
+  const db = slowDb(base, /INSERT INTO approval_requests/, { delayMs: 300 });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 50, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  const t0 = Date.now();
+  const first = JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body) as { response_action: string; view?: unknown };
+  assert.ok(Date.now() - t0 < 250, "ack waited for the slow insert");
+  assert.equal(first.response_action, "update");
+  assert.match(JSON.stringify(first.view), /Submitting your request/);
+  // The user (or a retry) submits the same form while the first insert is still running.
+  const again = submission(nonce, good);
+  const second = await rt.route("POST", "/slack/interactions", again, signed(again));
+  assert.equal(await rt.background.drain(), 0);
+  const all = await rt.backend.list("acme");
+  assert.equal(all.length, 1, "exactly one approval");
+  if (second.body) {
+    const b = JSON.parse(second.body) as { response_action: string; errors?: Record<string, string> };
+    if (b.response_action === "update") {
+      // The second submit waited on the first one's row lock past the budget: its outcome is DMed.
+      assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), /already submitted/);
+    } else {
+      assert.ok(b.response_action === "errors" && /already submitted/.test(b.errors?.start ?? ""), "second submit reports the form was used");
+    }
+  } else {
+    assert.equal(second.status, 403);
+  }
+  // Requester learns the outcome after the ack (receipt DM carries the request id).
+  assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), new RegExp(all[0]!.id));
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"form_late_created"')));
+});
+
+await check("form ack: a late failure is delivered to the requester, not lost; the form stays usable", async () => {
+  const base = await seeded({ approvers: ["alice"] }); // only the requester: NO_APPROVER inside the transaction
+  const db = slowDb(base, /FROM approval_policies/, { delayMs: 200 });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 30, env: { SLACK_APPROVAL_DELIVERY: "explicit" } });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body).response_action, "update");
+  await rt.background.drain();
+  assert.match(JSON.stringify(slack.posts.filter((p) => p.channel === "U0ALICE")), /No approver is configured/);
+  assert.ok(rt.logs.some((l) => l.includes('"evt":"form_late_error"') && l.includes("NO_APPROVER")));
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  await rt.backend.setPolicy("ops", { tenantId: "acme", commitTool: "commit_request_time_off", approverUserIds: ["mgr"] });
+  const fast = instance(base, { slackApi: slack.api });
+  const ok = submission(nonce, good);
+  assert.equal(JSON.parse((await fast.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear", "same form usable after the failure");
+});
+
+await check("form ack: a database failure after the nonce claim rolls the claim back; retry creates exactly one approval", async () => {
+  const base = await seeded();
+  const db = slowDb(base, /INSERT INTO approval_requests/, { failOnce: true });
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api });
+  const nonce = await openForm(rt, slack);
+  const vs = submission(nonce, good);
+  await assert.rejects(rt.route("POST", "/slack/interactions", vs, signed(vs)), /injected database failure/);
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  const retry = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", retry, signed(retry))).body).response_action, "clear");
+  assert.equal((await rt.backend.list("acme")).length, 1);
+});
+
+await check("form ack: permission deny is still shown on the modal, nothing created, form not consumed", async () => {
+  const db = await seeded();
+  const slack = fakeSlack();
+  const rt = instance(db, { slackApi: slack.api, budgetMs: 1_000 });
+  const nonce = await openForm(rt, slack);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"], denies: ["tool:commit_request_time_off"] });
+  const vs = submission(nonce, good);
+  const b = JSON.parse((await rt.route("POST", "/slack/interactions", vs, signed(vs))).body) as { response_action: string; errors: Record<string, string> };
+  assert.equal(b.response_action, "errors");
+  assert.match(b.errors.start ?? "", /not allowed/);
+  assert.equal((await rt.backend.list("acme")).length, 0);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"] });
+  const ok = submission(nonce, good);
+  assert.equal(JSON.parse((await rt.route("POST", "/slack/interactions", ok, signed(ok))).body).response_action, "clear");
+});
+
+await check("background runner: bounded per task, capped in flight, failures logged, drain waits", async () => {
+  const logs: string[] = [];
+  const bg = new BackgroundTasks({ log: (f) => logs.push(JSON.stringify(f)), timeoutMs: 50, maxInFlight: 2 });
+  assert.equal(bg.run("hang", () => new Promise(() => {})), true);
+  assert.equal(bg.run("boom", async () => { throw new Error("x"); }), true);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(bg.run("third", async () => {}), true, "slot freed by the failed task");
+  assert.equal(bg.run("fourth", async () => {}), false, "cap reached while the hanging task runs");
+  assert.equal(await bg.drain(500), 0);
+  assert.ok(logs.some((l) => l.includes("background_timeout")) && logs.some((l) => l.includes("background_failed")) && logs.some((l) => l.includes("background_refused")));
+});
+
+await check("commit replay: a finished commit is returned from the ledger without touching the OAuth provider (expired or deleted token)", async () => {
+  const db = await seeded();
+  let tokenCalls = 0;
+  const fetchImpl = (async () => (tokenCalls++, new Response("{}", { status: 400 }))) as unknown as typeof fetch;
+  const client = new CountingClient();
+  const rt = instance(db, { client, fetchImpl });
+  const r = await approvedRequest(rt);
+  const first = await rt.service.commitApproved(alice, r.id, "first-key-01");
+  await rt.tokens.set("alice", { accessToken: "old", refreshToken: "rt-dead", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  assert.deepEqual(await rt.service.commitApproved(alice, r.id, "retry-key-01"), first);
+  assert.equal(tokenCalls, 0, "no refresh for a replay");
+  assert.ok(await rt.tokens.get("alice"), "replay did not unlink the user");
+  await rt.tokens.delete("alice");
+  const s = cmdBody(`submit ${r.id}`);
+  assert.match(text(await rt.route("POST", "/slack/commands", s, signed(s))), /Submitted to Workday/);
+  assert.equal(client.submits, 1);
+  assert.equal(tokenCalls, 0);
+});
+
+await check("commit ownership before tokens: non-requester denied without a token fetch; revoked role or other tenant cannot read a stored result", async () => {
+  const db = await seeded();
+  let tokenCalls = 0;
+  const fetchImpl = (async () => (tokenCalls++, new Response("{}", { status: 400 }))) as unknown as typeof fetch;
+  const client = new CountingClient();
+  const rt = instance(db, { client, fetchImpl });
+  const mallory = { tenantId: "acme", userId: "mallory" };
+  await rt.tokens.set("mallory", { accessToken: "old", refreshToken: "rt-m", expiresAt: Date.now() - 1000, tokenType: "Bearer" });
+  const pending = await approvedRequest(rt);
+  await assert.rejects(rt.service.commitApproved(mallory, pending.id, "mallory-key-1"), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  assert.equal(tokenCalls, 0, "no token work for a non-requester");
+  assert.ok(await rt.tokens.get("mallory"), "non-requester's token untouched");
+  await rt.service.commitApproved(alice, pending.id, "alice-key-001");
+  await assert.rejects(rt.service.commitApproved(mallory, pending.id, "mallory-key-2"), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"], denies: ["tool:commit_request_time_off"] });
+  await assert.rejects(rt.service.commitApproved(alice, pending.id, "alice-key-002"), /denied|not allowed|deny/i);
+  await assert.rejects(rt.backend.beginCommit({ requestId: pending.id, caller: alice, authz: await rt.entitlements.authzFor(alice), idempotencyKey: "alice-key-003" }), /denied|not allowed|deny/i);
+  await rt.entitlements.set("ops", alice, { roles: ["worker_self"] });
+  await assert.rejects(rt.service.commitApproved({ tenantId: "other", userId: "alice" }, pending.id, "alice-key-004"), (e: Error & { code?: string }) => e.code === "CROSS_TENANT");
+  await assert.rejects(rt.backend.lookupCommit({ requestId: pending.id, caller: { tenantId: "other", userId: "alice" }, authz: await rt.entitlements.authzFor(alice) }), (e: Error & { code?: string }) => e.code === "NOT_REQUESTER");
+  assert.equal(tokenCalls, 0);
+  assert.equal(client.submits, 1);
 });
 
 for (const db of dbs) await db.close().catch(() => {});

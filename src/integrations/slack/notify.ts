@@ -165,6 +165,12 @@ export class SlackApprovalNotifier {
     this.log({ evt: "decided", req: r.id, status: r.status, requesterNotified: Boolean(requester) });
   }
 
+  /** Plain DM to a verified Slack user (for example a form outcome that arrived after the ack). */
+  async notice(to: SlackAddress, text: string): Promise<boolean> {
+    if (!this.deliveryEnabled) return false;
+    return this.post(to.userId, text, [section(escapeMrkdwn(text))]);
+  }
+
   /** Replace the message a button lived on (or a slash-command ack) with a final result. */
   async replace(responseUrl: string | undefined, text: string, blocks?: Record<string, unknown>[]): Promise<boolean> {
     return this.respond(responseUrl, { replace_original: true, response_type: "ephemeral", text, ...(blocks ? { blocks } : {}) });
