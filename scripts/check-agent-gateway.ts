@@ -8,7 +8,7 @@ import { mkdtempSync, symlinkSync, writeFileSync, statSync, readdirSync, chmodSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectUpstream, type UpstreamTool } from "../src/agent-gateway/upstream.js";
-import { AgentToolRegistry, analyzeSchema, fingerprint, ToolPolicyFile, type Ceiling, type ToolPolicy } from "../src/agent-gateway/agentready.js";
+import { AgentToolRegistry, analyzeSchema, isCalendarDate, isCalendarDateTime, fingerprint, ToolPolicyFile, type Ceiling, type ToolPolicy } from "../src/agent-gateway/agentready.js";
 import { writeOwnerOnlyJson, readOwnerOnlyJson } from "../src/agent-gateway/secure-file.js";
 import { AsuContextMismatch, AsuReauthRequired, AsuTokenProvider, asuEndpoints, authorizeUrl, exchangeCode, type AsuConfig } from "../src/agent-gateway/asu.js";
 
@@ -80,6 +80,19 @@ test("nested person field: unbound is refused; bound is filled; model injection 
   await x.r.read("searchGoals", "goals.self.read", { filter: { from: "2026-01-01" } }, "W-ME", "k");
   assert.deepEqual(w.calls.at(-1)!.args, { filter: { from: "2026-01-01", worker: "W-ME" }, contextInstanceId: "me" });
   await x.up.close();
+});
+
+test("dates are real calendar dates; impossible or overflowing values are refused", async () => {
+  for (const d of ["2024-02-29", "2000-02-29", "2026-01-31", "2026-04-30", "2026-12-31"]) assert.ok(isCalendarDate(d), d);
+  for (const d of ["2026-13-45", "2026-02-29", "1900-02-29", "2026-04-31", "2026-00-10", "2026-01-00", "2026-1-1", "20261-01-01", "2026-01-01x", "BOB_WID"]) assert.ok(!isCalendarDate(d), d);
+  for (const d of ["2026-11-08T23:59:59Z", "2024-02-29T00:00:00.123+05:30", "2026-11-08T10:00-12:00", "2026-11-08T10:00:00+23:59"]) assert.ok(isCalendarDateTime(d), d);
+  for (const d of ["2026-11-08T24:00:00Z", "2026-11-08T10:60:00Z", "2026-11-08T10:00:60Z", "2026-11-08T10:00:00+24:00", "2026-11-08T10:00:00+05:60", "2026-02-30T10:00:00Z", "2026-11-08T10:00:00", "2026-11-08 10:00:00Z"]) assert.ok(!isCalendarDateTime(d), d);
+  const w: World = { tools: base(), calls: [], pageSize: 50 };
+  const { up, r } = await reg(w);
+  await assert.rejects(r.read("getMyGoals", "goals.self.read", { from: "2026-13-45" }, "W-ME", "k"), /only enum, const, or date/);
+  await assert.rejects(r.read("getMyGoals", "goals.self.read", { from: "2026-02-29" }, "W-ME", "k"), /only enum, const, or date/);
+  await r.read("getMyGoals", "goals.self.read", { from: "2024-02-29" }, "W-ME", "k");
+  await up.close();
 });
 
 test("schemas that cannot be bound safely are refused: arrays, unions, open objects, refs", () => {

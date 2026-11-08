@@ -71,6 +71,20 @@ export const ToolPolicyFile = z.object({
   }),
 }).strict();
 
+/** RFC 3339 full-date with real month lengths and leap years. */
+export function isCalendarDate(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v); if (!m) return false;
+  const y = +m[1]!, mo = +m[2]!, d = +m[3]!;
+  if (mo < 1 || mo > 12 || d < 1) return false;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return d <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1]!;
+}
+/** RFC 3339 date-time: real date, hour 00-23, minute/second 00-59, offset Z or +-HH:MM within +-23:59. */
+export function isCalendarDateTime(v: string): boolean {
+  const m = /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?([Zz]|[+-](\d{2}):(\d{2}))$/.exec(v); if (!m) return false;
+  if (!isCalendarDate(m[1]!) || +m[2]! > 23 || +m[3]! > 59 || (m[4] !== undefined && +m[4] > 59)) return false;
+  return m[6] === undefined || (+m[6] <= 23 && +m[7]! <= 59);
+}
 /** A field name that denotes a record or person reference, whatever its scalar type. */
 export const isIdLike = (k: string) => /(id|ids|wid|wids|ref|refs|reference|references|key|keys|descriptor|token|uri|url)$/.test(norm(k));
 /** Backup name denial for manager-side business-process decisions and HR changes (the ceilings and annotations are the real gates). */
@@ -220,7 +234,7 @@ export class AgentToolRegistry {
     if (v !== null && typeof v !== "object" && isIdLike(leaf) && !("const" in n)) return [`${path}: record ids are not accepted`];
     if (typeof v === "string") {
       // Formats are checked here, not left to Ajv (which ignores "format" without ajv-formats).
-      if (n.format === "date" ? !/^\d{4}-\d{2}-\d{2}$/.test(v) : n.format === "date-time" ? !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/.test(v) : !(Array.isArray(n.enum) || "const" in n)) return [`${path}: only enum, const, or date values are accepted`];
+      if (n.format === "date" ? !isCalendarDate(v) : n.format === "date-time" ? !isCalendarDateTime(v) : !(Array.isArray(n.enum) || "const" in n)) return [`${path}: only enum, const, or date values are accepted`];
     }
     return [];
   }
