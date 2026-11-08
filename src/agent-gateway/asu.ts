@@ -99,7 +99,7 @@ export function exchangeCode(cfg: AsuConfig, code: string, verifier: string, f: 
  */
 export class AsuTokenProvider {
   private inflight?: Promise<string>;
-  constructor(private readonly cfg: AsuConfig, private session: AsuSession | undefined, private readonly opts: { fetch?: typeof fetch; now?: () => number; onChange?: (s: AsuSession | undefined) => void } = {}) {
+  constructor(private readonly cfg: AsuConfig, private session: AsuSession | undefined, private readonly opts: { fetch?: typeof fetch; now?: () => number; onChange?: (s: AsuSession | undefined) => void; onRefreshed?: () => void } = {}) {
     if (session) this.assertContext(session);
   }
   private assertContext(s: AsuSession) {
@@ -122,7 +122,7 @@ export class AsuTokenProvider {
     if (s.expiresAt - now > 5 * 60_000) return Promise.resolve(s.accessToken);
     if (!s.refreshToken) { this.signOut(); return Promise.reject(new AsuReauthRequired("ASU access token expired and no refresh token was issued; sign in again.")); }
     this.inflight ??= tokenRequest(this.cfg, { grant_type: "refresh_token", refresh_token: s.refreshToken }, this.opts.fetch ?? fetch, this.opts.now ?? Date.now)
-      .then((n) => { this.session = { ...n, workerId: s.workerId, refreshToken: n.refreshToken ?? s.refreshToken }; this.opts.onChange?.(this.session); return n.accessToken; })
+      .then((n) => { this.session = { ...n, workerId: s.workerId, refreshToken: n.refreshToken ?? s.refreshToken }; this.opts.onChange?.(this.session); this.opts.onRefreshed?.(); return n.accessToken; })
       .catch((e) => { this.signOut(); throw e instanceof AsuReauthRequired ? e : new AsuReauthRequired("ASU refresh failed; sign in again."); })
       .finally(() => { this.inflight = undefined; });
     return this.inflight;

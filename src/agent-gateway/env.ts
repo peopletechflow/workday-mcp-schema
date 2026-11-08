@@ -1,5 +1,6 @@
 /** Env + session file helpers for the Agent Gateway CLIs. The secret is read from a file; the session file is chmod 600. */
-import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { readOwnerOnlyJson, writeOwnerOnlyJson } from "./secure-file.js";
 import { z } from "zod";
 import type { AsuConfig, AsuSession } from "./asu.js";
 
@@ -14,5 +15,9 @@ export function asuConfigFromEnv(env: NodeJS.ProcessEnv): AsuConfig {
   return { gatewayHost: env.WORKDAY_AGENT_GATEWAY!, tenantAlias: env.WORKDAY_TENANT_ALIAS!, clientId: env.ASU_CLIENT_ID!, clientSecret: secretFile(env.ASU_CLIENT_SECRET_FILE!, "ASU_CLIENT_SECRET_FILE"), redirectUri: env.ASU_REDIRECT_URI!, production: env.NODE_ENV === "production" };
 }
 const Session = z.object({ gatewayHost: z.string(), tenantAlias: z.string(), clientId: z.string(), workerId: z.string().optional(), accessToken: z.string(), refreshToken: z.string().optional(), expiresAt: z.number() }).strict();
-export const loadSession = (path: string): AsuSession | undefined => { try { return Session.parse(JSON.parse(readFileSync(path, "utf8"))); } catch { return undefined; } };
-export function saveSession(path: string, s: AsuSession | undefined) { const tmp = `${path}.tmp`; writeFileSync(tmp, JSON.stringify(s ?? {}), { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, path); }
+export function loadSession(path: string): AsuSession | undefined {
+  let raw: unknown;
+  try { raw = readOwnerOnlyJson(path); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw e; }
+  const p = Session.safeParse(raw); return p.success ? p.data : undefined;
+}
+export function saveSession(path: string, s: AsuSession | undefined) { writeOwnerOnlyJson(path, s ?? {}); }

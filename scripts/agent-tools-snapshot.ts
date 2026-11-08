@@ -4,11 +4,11 @@
  */
 import { asuEndpoints, AsuTokenProvider } from "../src/agent-gateway/asu.js";
 import { asuConfigFromEnv, loadSession, saveSession } from "../src/agent-gateway/env.js";
-import { connectUpstream, isSubjectArg } from "../src/agent-gateway/upstream.js";
-import { fingerprint } from "../src/agent-gateway/agentready.js";
+import { connectUpstream } from "../src/agent-gateway/upstream.js";
+import { analyzeSchema, fingerprint } from "../src/agent-gateway/agentready.js";
 
 const cfg = asuConfigFromEnv(process.env); const path = process.env.ASU_SESSION_FILE!;
 const p = new AsuTokenProvider(cfg, loadSession(path), { onChange: (s) => saveSession(path, s) });
 const up = await connectUpstream({ url: asuEndpoints(cfg).mcp, accessToken: p.token });
-for (const t of await up.listTools()) console.log(JSON.stringify({ name: t.name, fingerprint: fingerprint(t), annotations: t.annotations, personArgs: Object.keys(t.inputSchema?.properties ?? {}).filter(isSubjectArg) }));
+for (const t of await up.listTools()) console.log(JSON.stringify({ name: t.name, fingerprint: fingerprint(t), annotations: t.annotations, personPaths: analyzeSchema(t.inputSchema as never).subjectPaths, schemaProblems: analyzeSchema(t.inputSchema as never).problems }));
 await up.close();
