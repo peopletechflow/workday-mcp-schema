@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "check:rbac": "tsx scripts/check-rbac.ts",
@@ -21,7 +21,8 @@
     "db:migrate": "node dist/cli/admin.js migrate",
     "check:durable": "tsx scripts/check-durable.ts",
     "check:mcp": "tsx scripts/check-mcp.ts",
-    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:migrations && pnpm run check:durable",
+    "check:security": "tsx scripts/check-security.ts",
+    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:migrations && pnpm run check:durable && pnpm run check:security",
     "db:status": "node dist/cli/admin.js db-status",
     "db:seed:dev": "node dist/cli/admin.js seed-dev",
     "db:export": "tsx scripts/export-sql.ts",
@@ -44,7 +45,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "ai": "^7.0.163",
     "pg": "^8.23.1",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.15",

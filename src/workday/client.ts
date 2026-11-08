@@ -148,6 +148,7 @@ export class HttpWorkdayClient implements WorkdayClient {
         },
         body: init.body ? JSON.stringify(init.body) : undefined,
         signal: AbortSignal.timeout(this.opts.timeoutMs),
+        redirect: "error",
       });
     } catch (e) {
       if (init.method === "POST") throw new WorkdayAmbiguousResultError(op, `Network error or timeout on ${op}; outcome unknown.`);

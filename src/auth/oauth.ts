@@ -90,6 +90,7 @@ async function postTokenEndpoint(
       },
       body,
       signal: AbortSignal.timeout(OAUTH_HTTP_TIMEOUT_MS),
+      redirect: "error",
     });
   } catch {
     throw new OAuthTokenError(undefined, false, `${what} failed: token endpoint unreachable or timed out.`);

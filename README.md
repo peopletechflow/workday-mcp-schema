@@ -1,5 +1,8 @@
 # workday-mcp-schema
 
+> **Status: experimental.** This is an independent project and is not affiliated with or endorsed by Workday. It has not been run against a production Workday tenant, and live adapters only work for capabilities your tenant mapping verifies (everything else is gated). Fixture data is invented. Security: see [SECURITY.md](SECURITY.md). Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md). CI is a template in `docs/ci-workflow.example.yml` and is not active until it is installed.
+
+
 Permission-safe **Workday MCP server** scaffold (Node.js / TypeScript). Task-shaped tools only, per-user OAuth 2.0 (auth code + PKCE), preview-then-confirm writes, idempotent commits, and audited calls with PII redaction.
 
 Intended owner: GitHub user **peopletechflow** (private repo).

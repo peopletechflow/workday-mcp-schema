@@ -38,6 +38,7 @@ export function createHttpSlackApi(botToken: string, fetchImpl: typeof fetch = f
         headers: { "content-type": "application/json; charset=utf-8", ...(auth ? { authorization: `Bearer ${botToken}` } : {}) },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(SLACK_HTTP_TIMEOUT_MS),
+        redirect: "error",
       });
     } catch {
       return { ok: false, error: "network_or_timeout" };

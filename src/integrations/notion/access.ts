@@ -103,7 +103,7 @@ export function createNotionHttpFetcher(fetchImpl: typeof fetch = fetch, limits 
     let requests = 0;
     const get = async (path: string): Promise<Record<string, unknown>> => {
       if (++requests > limits.maxRequests) throw new NotionAccessDeniedError("notion_request_budget_exceeded");
-      const res = await fetchImpl(`https://api.notion.com/v1/${path}`, { headers });
+      const res = await fetchImpl(`https://api.notion.com/v1/${path}`, { headers, redirect: "error" });
       if (!res.ok) throw new NotionAccessDeniedError(`notion_http_${res.status}`);
       return (await res.json()) as Record<string, unknown>;
     };

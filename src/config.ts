@@ -91,6 +91,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const config = parsed.data;
+  for (const [k, v] of [["WORKDAY_BASE_URL", config.workdayBaseUrl], ["WORKDAY_OAUTH_AUTHORIZE_URL", config.oauthAuthorizeUrl], ["WORKDAY_OAUTH_TOKEN_URL", config.oauthTokenUrl]] as const) {
+    const u = new URL(v);
+    // Bearer tokens, refresh tokens and the client secret travel to these URLs: https only (http only for loopback test doubles).
+    if (u.protocol !== "https:" && !["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)) throw new Error(`${k} must use https.`);
+    if (u.username || u.password) throw new Error(`${k} must not contain credentials.`);
+  }
   if (looksLikeProduction(config.workdayBaseUrl, config.workdayTenant) && !config.allowProd) {
     throw new Error(
       "Refusing to start against what looks like a production Workday tenant. " +

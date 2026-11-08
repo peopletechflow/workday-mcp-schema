@@ -82,7 +82,7 @@ export function buildLayer3AiTools(
     // Description and parameters come from the schema-first contract so the model sees what a
     // caller would (what it does, who may use it, every input). buildReason is internal rationale.
     const contract = contractFor(toolName);
-    const inputSchema: z.ZodTypeAny = contract ? z.object(contract.input).strict() : z.record(z.unknown());
+    const inputSchema: z.ZodType<Record<string, unknown>> = contract ? z.object(contract.input).strict() : z.record(z.string(), z.unknown());
     tools[toolName] = tool({
       description: `${contract?.description ?? entry.buildReason} [${entry.toolClass}; permission ${permissionIdForTool(toolName)}]`,
       // Args are validated again by each tool's Zod contract inside invokeTool / framework.

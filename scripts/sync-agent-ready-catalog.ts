@@ -48,7 +48,7 @@ function normHeader(h: string): string {
 function parseCsv(text: string): Record<string, string>[] {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim().length);
   if (lines.length < 2) return [];
-  const headers = splitCsvLine(lines[0]).map(normHeader);
+  const headers = splitCsvLine(lines[0]!).map(normHeader);
   return lines.slice(1).map((line) => {
     const cells = splitCsvLine(line);
     const row: Record<string, string> = {};

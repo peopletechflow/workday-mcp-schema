@@ -106,7 +106,7 @@ export function buildIntegrationToolset(ctx: IntegrationAgentContext): Record<st
     // The contract text is written for a caller (what it returns, who may use it) and its input
     // shape names every parameter; buildReason is internal rationale and says nothing about use.
     const contract = contractFor(name);
-    const inputSchema: z.ZodTypeAny = contract ? z.object(contract.input).strict() : z.record(z.unknown());
+    const inputSchema: z.ZodType<Record<string, unknown>> = contract ? z.object(contract.input).strict() : z.record(z.string(), z.unknown());
     tools[name] = tool({
       description: contract?.description ?? `${entry.buildReason} [read-only]`,
       inputSchema,
@@ -137,7 +137,7 @@ export function buildIntegrationToolset(ctx: IntegrationAgentContext): Record<st
     const approvals = ctx.approvals;
     tools.propose_time_off_request = tool({
       description: "Create a time-off change preview that a human approver must approve. Does not submit anything to Workday.",
-      inputSchema: TimeOffFormSchema.innerType().strict(),
+      inputSchema: TimeOffFormSchema.strict(),
       execute: async (input: z.infer<typeof TimeOffFormSchema>) => {
         const f = TimeOffFormSchema.parse(input);
         const r = await approvals.proposeTimeOff(ctx.identity, f, "agent");

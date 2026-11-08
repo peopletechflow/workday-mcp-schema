@@ -98,7 +98,7 @@ const Payload = z.object({
   view: z.object({
     callback_id: z.string(),
     private_metadata: z.string().max(64),
-    state: z.object({ values: z.record(z.record(z.record(z.unknown()))) }),
+    state: z.object({ values: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) }),
   }),
 });
 
