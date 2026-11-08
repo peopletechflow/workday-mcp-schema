@@ -26,6 +26,7 @@ import {
 import { buildIntegrationToolset, wrapUntrusted, INTEGRATION_SYSTEM_PROMPT } from "../src/ai/integration-agent.js";
 import { InMemoryAssignmentStore, RbacDeniedError, type Role } from "../src/rbac/index.js";
 import { createNotionHttpFetcher, NOTION_API_VERSION, handleSlashCommand, type SlackApi } from "../src/integrations/index.js";
+import { TIME_OFF_SHORTCUT_ID } from "../src/integrations/slack/commands.js";
 import { pgliteDb } from "./lib/test-db.js";
 import { fakeSlack as fakeSlackApi, instance, seed, signed as signedNow, submitButton } from "./lib/harness.js";
 
@@ -534,6 +535,19 @@ await check("notion contract: archived page, non-page object, HTTP error, reques
   await assert.rejects(createNotionHttpFetcher(notionFake({ object: "database" }).impl)("svc", PAGE), /not_the_allowlisted_page/);
   await assert.rejects(createNotionHttpFetcher(notionFake().impl)("svc", "9".repeat(32)), /notion_http_404/);
   await assert.rejects(createNotionHttpFetcher(notionFake().impl, { maxDepth: 3, maxRequests: 2 })("svc", PAGE), /budget/);
+});
+
+await check("slack app manifest matches routes, command, shortcut, and least-privilege scopes", async () => {
+  const { readFileSync } = await import("node:fs");
+  const m = JSON.parse(readFileSync(new URL("../slack/app-manifest.json", import.meta.url), "utf8"));
+  assert.match(m.features.slash_commands[0].url, /^https:\/\/[^/]+\/slack\/commands$/);
+  assert.match(m.settings.interactivity.request_url, /^https:\/\/[^/]+\/slack\/interactions$/);
+  assert.match(m.settings.event_subscriptions.request_url, /^https:\/\/[^/]+\/slack\/events$/);
+  assert.equal(m.features.slash_commands[0].command, "/workday");
+  assert.equal(m.features.shortcuts[0].callback_id, TIME_OFF_SHORTCUT_ID);
+  assert.deepEqual([...m.oauth_config.scopes.bot].sort(), ["app_mentions:read", "channels:history", "chat:write", "commands", "im:write"]);
+  assert.equal(m.oauth_config.scopes.user, undefined);
+  assert.equal(m.oauth_config.redirect_urls, undefined);
 });
 
 console.log(`\n${passed} integration checks passed`);

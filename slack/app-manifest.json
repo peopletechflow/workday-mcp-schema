@@ -1,0 +1,47 @@
+{
+  "_metadata": { "major_version": 2, "minor_version": 1 },
+  "display_information": {
+    "name": "PeopleTech Flow Workday",
+    "description": "Request time off and approve Workday changes from Slack. Every write needs a human approver.",
+    "long_description": "PeopleTech Flow Workday (workday-mcp-schema) lets linked employees open a time-off form with /workday, sends the request to the assigned approver as a direct message with Approve and Reject buttons, and lets the requester submit the approved request to Workday with their own Workday sign-in. Nothing is written to Workday without an approval.",
+    "background_color": "#1F3A5F"
+  },
+  "features": {
+    "bot_user": { "display_name": "PeopleTech Flow Workday", "always_online": false },
+    "slash_commands": [
+      {
+        "command": "/workday",
+        "url": "https://REPLACE-WITH-YOUR-PUBLIC-HTTPS-HOST.example.com/slack/commands",
+        "description": "Time off form, request status, submit an approved request, link your Workday account",
+        "usage_hint": "[timeoff | status apr_... | submit apr_... | link | help]",
+        "should_escape": false
+      }
+    ],
+    "shortcuts": [
+      {
+        "name": "Request time off",
+        "type": "global",
+        "callback_id": "wd_time_off_shortcut",
+        "description": "Open the Workday time-off request form"
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": ["commands", "chat:write", "im:write", "channels:history", "app_mentions:read"]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://REPLACE-WITH-YOUR-PUBLIC-HTTPS-HOST.example.com/slack/events",
+      "bot_events": ["message.channels", "app_mention"]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://REPLACE-WITH-YOUR-PUBLIC-HTTPS-HOST.example.com/slack/interactions"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
