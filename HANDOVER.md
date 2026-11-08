@@ -23,3 +23,6 @@
 ## Known design limits
 - Linking does not verify which Workday worker signed in (no validated "who am I" contract); calls use `me`.
 - Only self-service time off is wired through approvals.
+
+## Branch state (2026-11-08)
+`origin/main` is at `4bf10b2`. `security/oss-hardening` descends from it and adds the OSS hardening commits. Nothing is merged and there is no PR. No earlier history is missing.

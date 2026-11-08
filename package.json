@@ -22,7 +22,7 @@
     "check:durable": "tsx scripts/check-durable.ts",
     "check:mcp": "tsx scripts/check-mcp.ts",
     "check:security": "tsx scripts/check-security.ts",
-    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:migrations && pnpm run check:durable && pnpm run check:security",
+    "check": "pnpm run typecheck && pnpm run check:rbac && pnpm run check:mcp && pnpm run check:integrations && pnpm run check:migrations && pnpm run check:durable && pnpm run check:security && tsx scripts/check-ci-template.ts",
     "db:status": "node dist/cli/admin.js db-status",
     "db:seed:dev": "node dist/cli/admin.js seed-dev",
     "db:export": "tsx scripts/export-sql.ts",
