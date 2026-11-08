@@ -5,10 +5,16 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Env / secrets
+# Env / secrets (local DB config included). Keep .env.example tracked.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+local.env
+*.env.bak
+.env*.bak
+.env*.backup
+*.pw
+secrets/
 *.pem
 *.key
 
