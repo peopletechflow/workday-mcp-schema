@@ -166,7 +166,7 @@ Enforcement: `assertToolAllowedForUser` / `assertAgentReadyCallAllowedForUser` i
 | `admin` | Integration/Security Administrator | Platform admins |
 
 - Keep the skill's **Available To** list aligned with these roles, so the agent never offers a tool it would deny.
-- Production: resolve roles from the user's Workday security group memberships (for example a RaaS report or Workers API call as the user, cached per session). Fixtures/dev: `WORKDAY_USER_ROLES=worker_self,manager` (default `worker_self`). Unknown roles fail startup.
+- Stdio roles come from `WORKDAY_USER_ROLES` (default `worker_self`) for the life of the process, including a live tenant. Unknown roles fail startup. This server does not look up Workday security groups. Workday still enforces the caller's own token on live calls. A security-group lookup needs a sandbox-validated contract and is not implemented.
 
 ## Denial behavior
 - `assertToolAllowed(userRoles, toolName)` throws `RbacDeniedError`. Tools return `{ "error": "PERMISSION_DENIED", "message": "Access denied: '<tool>' requires one of [...]; you have [...]. Ask your Workday security admin ..." }`.
@@ -177,5 +177,5 @@ Enforcement: `assertToolAllowedForUser` / `assertAgentReadyCallAllowedForUser` i
 1. Add or rename roles in `src/rbac/roles.ts` (`ROLES`, `ROLE_DESCRIPTIONS`).
 2. Update `TOOL_PERMISSIONS` for every tool, keeping preview/commit pairs identical.
 3. Map each role to a Workday security group and to the skill's Available To list.
-4. Swap `resolveRolesFromEnv` for a security-group lookup in production.
+4. Add a security-group lookup only after a sandbox-validated contract exists. This repository does not include one. `resolveRolesFromEnv` reads `WORKDAY_USER_ROLES`.
 5. Run `pnpm run typecheck && pnpm run check:rbac`.

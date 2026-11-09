@@ -1,3 +1,13 @@
+---
+name: payroll-viewer-skill
+description: Use when a payroll viewer asks about pay groups, pay runs, pay results, or their own payslip. Do not use to create or change payroll data, or to open another worker's payslip.
+---
+
+> **Boundary.** This file mirrors a Workday Extend skill. The tenant copy is the source of truth. The body below is the tenant text, unchanged.
+> This repository does not register these tool names. Do not call them on the workday-mcp-schema MCP server.
+> In this repository, a change is a preview or a propose tool, then a human confirm, then a commit in code. A yes in chat is not a submit.
+> If a step names a tool that is not in the tool list, stop and say the step is unavailable.
+
 # Payroll Viewer Skill
 
 Read-only payroll visibility for users with access to one or more Workday pay groups.

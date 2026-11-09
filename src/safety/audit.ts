@@ -1,33 +1,9 @@
 import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isSensitiveKey, normalizeKey, scrubSensitiveText } from "./redact.js";
 
-const PII_KEYS = new Set([
-  "email",
-  "name",
-  "full_name",
-  "first_name",
-  "last_name",
-  "phone",
-  "ssn",
-  "national_id",
-  "date_of_birth",
-  "dob",
-  "address",
-  "home_address",
-  "access_token",
-  "refresh_token",
-  "id_token",
-  "authorization",
-  "password",
-  "secret",
-  // Free text: may contain health or personal detail (e.g. sick-leave comments).
-  "comment",
-  "comments",
-  "reason",
-  "note",
-  "notes",
-]);
+export { isSensitiveKey, scrubSensitiveText } from "./redact.js";
 
 export type AuditEntry = {
   ts: string;
@@ -48,11 +24,12 @@ export function redactPii(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      const key = k.toLowerCase();
-      if (PII_KEYS.has(key) || key.includes("token") || key.includes("secret")) {
+      if (isSensitiveKey(k)) {
         out[k] = "[REDACTED]";
-      } else if (key === "value" && typeof v === "string" && v.length > 24) {
+      } else if (normalizeKey(k) === "value" && typeof v === "string" && v.length > 24) {
         out[k] = `[hash:${createHash("sha256").update(v).digest("hex").slice(0, 12)}]`;
+      } else if (typeof v === "string") {
+        out[k] = scrubSensitiveText(v);
       } else {
         out[k] = redactPii(v, depth + 1);
       }
@@ -69,9 +46,7 @@ export class AuditLogger {
     const safe: AuditEntry = {
       ...entry,
       inputs: redactPii(entry.inputs),
-      errorMessage: entry.errorMessage
-        ? entry.errorMessage.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
-        : undefined,
+      errorMessage: entry.errorMessage ? scrubSensitiveText(entry.errorMessage) : undefined,
     };
     try {
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });

@@ -14,6 +14,8 @@ type StoredRecord = {
 /**
  * File-backed encrypted token store (AES-256-GCM).
  * The caller supplies the secret (see tokenStoreSecret in config.ts); there is no built-in fallback.
+ * Additional authenticated data is `token:<userId>`, so ciphertext cannot be moved to another user.
+ * A tokens.json written before that binding does not decrypt. Sign in again.
  * Replace with a proper KMS / secrets manager before production.
  */
 export class TokenStore {
@@ -66,9 +68,14 @@ export class TokenStore {
     }
   }
 
+  private aad(userId: string): Buffer {
+    return Buffer.from(`token:${userId}`, "utf8");
+  }
+
   private encrypt(userId: string, tokens: OAuthTokens): StoredRecord {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    cipher.setAAD(this.aad(userId));
     const plaintext = Buffer.from(JSON.stringify(tokens), "utf8");
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
@@ -87,6 +94,7 @@ export class TokenStore {
       this.key,
       Buffer.from(record.iv, "base64"),
     );
+    decipher.setAAD(this.aad(record.userId));
     decipher.setAuthTag(Buffer.from(record.tag, "base64"));
     const plaintext = Buffer.concat([
       decipher.update(Buffer.from(record.ciphertext, "base64")),

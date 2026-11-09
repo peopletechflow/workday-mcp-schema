@@ -27,7 +27,7 @@ export function parseRoles(raw: string | undefined): Role[] {
   return [...new Set(parts as Role[])];
 }
 
-/** Fixture/dev role resolution from env. Real deployments resolve from Workday security groups. */
+/** Stdio role list from WORKDAY_USER_ROLES. This function does not query Workday security groups. */
 export function resolveRolesFromEnv(env: NodeJS.ProcessEnv = process.env): Role[] {
   return parseRoles(env.WORKDAY_USER_ROLES ?? "worker_self");
 }

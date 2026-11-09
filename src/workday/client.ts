@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config.js";
+import { scrubSensitiveText } from "../safety/redact.js";
 import type {
   TimeOffBalance,
   TimeOffRequestInput,
@@ -220,7 +221,7 @@ export class HttpWorkdayClient implements WorkdayClient {
     } catch {
       // ignore non-JSON fault bodies
     }
-    return new WorkdayApiError(res.status, { code, message: message.slice(0, 300) });
+    return new WorkdayApiError(res.status, { code, message: scrubSensitiveText(message).slice(0, 300) });
   }
 }
 

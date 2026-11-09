@@ -44,7 +44,8 @@ export function buildMcpServer(opts: McpServerOptions) {
   // MCP stdio sessions are typically single-user; override via WORKDAY_USER_ID.
   const resolveUserId = (): string => env.WORKDAY_USER_ID?.trim() || "local-user";
 
-  // Fixture/dev: roles from WORKDAY_USER_ROLES. Production: derive from Workday security groups.
+  // Stdio roles come from WORKDAY_USER_ROLES for this process, in fixture mode and in live mode.
+  // This server does not look up Workday security groups. The caller's token is still what Workday enforces.
   const userRoles = resolveRolesFromEnv(env);
   // Lowest-level user grants/denies (JSON file + WORKDAY_USER_GRANTS / WORKDAY_USER_DENIES).
   const assignments = createAssignmentStore(env);

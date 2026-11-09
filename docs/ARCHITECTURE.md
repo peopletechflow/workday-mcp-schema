@@ -4,6 +4,12 @@
 
 See also: [RBAC.md](./RBAC.md) · [SCHEMA.md](./SCHEMA.md) · [INTEGRATIONS.md](./INTEGRATIONS.md) · [README](../README.md)
 
+## Harness
+
+A harness is the code around the model: prompts, tools, durable state, and checks that do not depend on the model. This server has those pieces for an HR integration. System prompts and tool contracts live in `src/ai/` and `src/schemas/tools/`. Permission checks, preview tokens, idempotency, and the approval ledger run in code. The integration agent and the enterprise agent wrap tool results as untrusted data. State that must outlive a turn sits in Postgres, or in the local token and audit files for stdio. `pnpm check` is the verification hook, and GitHub Actions runs it on pull requests.
+
+Bash, a code sandbox, planning files, and multi-agent loops are out of scope. The model does not get a general-purpose computer, and HR data is not written out as scratch files for a later turn.
+
 ## The three layers
 
 ### 1. Native Agent-Ready MCP tools (Workday): prefer these first

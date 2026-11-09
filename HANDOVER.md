@@ -9,10 +9,11 @@
 - Database: versioned migrations with checksums and status (docs/DATABASE.md), owner/app role split via `db/psql/bootstrap-local.psql`, guarded dev seed. psql-only artifacts in `db/`. Local dev DB on the Mac: Postgres.app 18.6, `workday_mcp_dev` on 127.0.0.1:5432, migrations 1-2 applied, demo seed loaded; source `~/Library/Application Support/workday-mcp/local.env`.
 - Local dev config: `.env.local` (gitignored) is loaded by `pnpm dev:serve` / `pnpm serve` / `pnpm admin` outside production; process env wins.
 - Package manager is pnpm (`packageManager` pin, `pnpm-lock.yaml`, Dockerfile via corepack). `package-lock.json` is gone; do not bring it back.
-- Agent prompts and toolsets follow docs/CONTEXT-ENGINEERING.md (sectioned prompts, contract-driven tool descriptions and schemas, capped tool results, bounded steps). `AGENTS.md` is the short up-front map for coding agents.
+- Agent prompts and toolsets follow docs/CONTEXT-ENGINEERING.md (sectioned prompts, contract-driven tool descriptions and schemas, capped tool results, bounded steps). The enterprise agent wraps tool results and omits commit tools unless `allowWriteCommits` is true. `AGENTS.md` is the short up-front map for coding agents. `extend/skills/` are tenant mirrors with a triggering description and a boundary box.
+- Stdio token files use AAD `token:<userId>`. Older `.data/tokens.json` files need a fresh sign-in. Stdio roles come from `WORKDAY_USER_ROLES`. There is no security-group lookup. GitHub Actions runs `pnpm check` on pull requests.
 
 ## Verified offline
-`pnpm run check` (typecheck, check:rbac, check:mcp 11, check:integrations 38, check:migrations 7 (12 on PostgreSQL 17), check:durable 34 on PGlite and on PostgreSQL 17 via `CHECK_DATABASE_URL`). Built server booted against Postgres: migrate, admin commands, `/healthz` 200, `/readyz` 200, unsigned Slack 401.
+`pnpm run check` (typecheck, check:rbac, check:mcp 16, check:integrations 40, check:migrations 7 (12 on PostgreSQL 17), check:durable 35 on PGlite and on PostgreSQL 17 via `CHECK_DATABASE_URL`). GitHub Actions runs the same `pnpm check` on pull requests. Built server booted against Postgres: migrate, admin commands, `/healthz` 200, `/readyz` 200, unsigned Slack 401.
 
 ## Not done (needs access, not code)
 1. Sandbox validation of Workday contracts (docs/SANDBOX-TESTING.md); until then `WORKDAY_VALIDATED_OPERATIONS` stays empty and live commits are refused.
