@@ -1,22 +1,18 @@
 # workday-mcp-schema
 
-A permission-safe Workday MCP server baseline in Node.js and TypeScript: task-shaped tools, per-user OAuth, preview-then-confirm writes and audited calls.
+A TypeScript MCP server baseline for Workday, from PeopleTech Flow B.V. in Utrecht. It exposes task-shaped tools, per-user OAuth, and preview-then-confirm writes. Fixture mode is the default. It has not been run against a production tenant. Live Workday behavior depends on the customer's tenant, and the tests in this repository do not verify that tenant.
 
-<!-- Demo slot: a demo goes here, directly under the tagline, once real footage exists. -->
+## What it is
 
-## About
+Use native Workday Agent-Ready tools first, then a Custom Agent Action in Workday Extend when the process is specific to one tenant, and a tool in this repository when you need a pattern you can reuse: a Zod contract, per-user OAuth, role checks, a preview, a human confirm, and an audit record. This repository is that third layer. `extend/` documents skills that live in a dev tenant. It is not the server.
 
-workday-mcp-schema is a reusable baseline for custom Workday MCP servers. It is for teams building their own Workday agent tooling. It is layer 3 of the Workday agent stack: prefer native Agent-Ready MCP tools first, then Custom Agent Actions (Orchestrate), and use this baseline for cross-tenant patterns, guardrails or multi-system composition.
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-- Task-shaped tools with Zod contracts, listed in one registry. There is no raw passthrough tool and no payroll write.
-- Per-user OAuth 2.0 (authorization code with PKCE). No shared account and no service-account fallback.
-- RBAC before every Workday call, mapped to Workday security groups.
-- Preview-then-confirm writes, idempotent commits, and an audit log with PII redaction.
-- A local catalog of native Agent-Ready tools, plus optional Slack and Notion integrations.
+## What it does not do
 
-Related: [Internal People Agent](https://github.com/peopletechflow/internal-people-agent) and [Performance Review Cycle Helper](https://github.com/peopletechflow/performance-review-cycle-helper) adapt their security patterns from this repository.
+There is no raw Workday passthrough tool and no payroll write. There is no shared integration account. Account linking does not prove which worker signed in. The people in the fixtures are invented. This project is not a Workday product, and it does not re-implement Workday's Agent-Ready MCP server.
 
-## Main Logic
+## How it works
 
 ```mermaid
 flowchart LR
@@ -26,47 +22,73 @@ flowchart LR
   D -->|write| F[Preview] --> G[Confirm and idempotent commit] --> E
 ```
 
-- **Contracts.** Tool inputs, outputs and API objects are Zod schemas in [`src/schemas/`](src/schemas/). Every tool is listed in [`src/tools/registry.ts`](src/tools/registry.ts), and startup fails on drift. See [docs/SCHEMA.md](docs/SCHEMA.md).
-- **Workday client.** Fixtures are the default (`WORKDAY_USE_FIXTURES=true`). With fixtures off, the HTTP client returns a `NOT_IMPLEMENTED` error for fixture-only tools, with no silent fallback.
-- **Writes.** `commit_*` needs a valid `previewToken`, `userConfirmed: true` and an `idempotencyKey`. Retries return the stored result. Submits go through the Workday business process.
-- **Agent-Ready catalog.** `src/agent-ready/` documents native Agent-Ready tools for local discovery. It does not re-implement Workday MCP. Native self-service writes run only through the preview and confirm guard.
-- **Model calls.** All go through `src/ai/` (Vercel AI SDK). Leave `AI_GATEWAY_API_KEY` unset or set `WORKDAY_AI_DISABLED=1` in CI and fixtures.
+Two runtimes:
 
-Layers, catalog and tool reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **stdio MCP** (`src/index.ts`). Credentials, the user id, and roles come from the environment. The per-user Workday sign-in is a separate OAuth flow. See [docs/MCP-AUTHORIZATION.md](docs/MCP-AUTHORIZATION.md).
+- **HTTP runtime** (`pnpm serve`). Slack webhooks, account linking, and approvals. It is not an MCP endpoint. Callers are a verified Slack signature plus an active identity link.
 
-### Security
+Model calls go through `src/ai/`. They stay off when `AI_GATEWAY_API_KEY` is unset.
 
-- **Per-user access.** Every call uses the caller's own access token, stored encrypted per user.
-- **RBAC.** Roles `worker_self`, `manager`, `hr_partner`, `payroll_viewer` and `admin` map to Workday security groups and the ASOR skill's Available To list. Per-user `tool:<name>` grants and denies add least privilege. See [docs/RBAC.md](docs/RBAC.md).
-- **Gated live operations.** Production tenants stay blocked unless `WORKDAY_ALLOW_PROD=true`. Live Workday operations stay blocked until validated in your sandbox: [docs/SANDBOX-TESTING.md](docs/SANDBOX-TESTING.md).
-- **Kill switch.** `WORKDAY_DISABLED_TOOLS` turns off listed tools.
+Reads check permission, call Workday with the caller's token, and append an audit line. Writes store the exact payload, wait for a human, then commit through code with an idempotency key. The integration agent can propose a change. It cannot approve or commit.
 
-Report vulnerabilities privately: [SECURITY.md](SECURITY.md). MCP authorization notes: [docs/MCP-AUTHORIZATION.md](docs/MCP-AUTHORIZATION.md).
+## How to run
 
-## Deployment and Install
+**Prerequisites:** Node.js 22 and pnpm 10. A live tenant needs a Workday sandbox or implementation tenant and an OAuth API client.
 
-**Prerequisites:** Node.js 18 or later and pnpm 10. Live use needs a Workday sandbox or implementation tenant and an OAuth API client.
-
-**Configure:** copy `.env.example` to `.env` and fill in the placeholders: `WORKDAY_BASE_URL`, `WORKDAY_TENANT`, `WORKDAY_OAUTH_CLIENT_ID`, `WORKDAY_OAUTH_CLIENT_SECRET`, `WORKDAY_OAUTH_REDIRECT_URI`, `WORKDAY_USE_FIXTURES` and `WORKDAY_USER_ROLES` (dev only). Develop against a sandbox or implementation tenant only.
-
-**Run the stdio MCP server:**
+**Configure:** copy `.env.example` to `.env`. Develop against a sandbox or implementation tenant only.
 
 ```bash
 pnpm install
-pnpm check         # typecheck, rbac, mcp, integrations, migrations and durable runtime checks (offline)
+pnpm check         # typecheck, rbac, mcp, integrations, migrations, and a PGlite durable run
 pnpm build
-pnpm start         # or: pnpm dev
+pnpm dev           # stdio MCP server (or: pnpm start after build)
 ```
 
 An example MCP client config is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#example-mcp-client-config-stdio).
 
-**HTTP runtime** (Slack intake, approvals, OAuth account linking, Postgres state): `pnpm build && pnpm db:migrate && pnpm serve`. Integrations are off by default. See [docs/RUNBOOK.md](docs/RUNBOOK.md), [docs/DATABASE.md](docs/DATABASE.md) and [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md). A `Dockerfile` is included.
+**HTTP runtime** (Slack intake, approvals, OAuth account linking, Postgres): `pnpm build && pnpm db:migrate && pnpm serve`. Integrations are off by default. See [docs/RUNBOOK.md](docs/RUNBOOK.md), [docs/DATABASE.md](docs/DATABASE.md), and [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md). A `Dockerfile` is included.
 
-**Workday native skills:** [extend/](extend/README.md) mirrors the Workday Extend app that hosts the custom agent skills. It is documentation; the source of truth lives in the tenant. Refresh the Agent-Ready catalog with `pnpm sync:agent-ready --csv <Explorer.csv>` (see `src/agent-ready/sync.md`).
+GitHub Actions runs `pnpm check` on pull requests.
 
-**CI:** no workflow is installed. Run `pnpm check` locally.
+**Workday native skills:** [extend/](extend/README.md) mirrors skills that live in the tenant. Refresh the local catalog with `pnpm sync:agent-ready --csv <Explorer.csv>` (see `src/agent-ready/sync.md`).
 
-More: [HANDOVER](HANDOVER.md), [CHANGELOG](CHANGELOG.md), [AGENTS](AGENTS.md). Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md).
+More: [HANDOVER](HANDOVER.md), [CHANGELOG](CHANGELOG.md), [AGENTS](AGENTS.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security model
+
+- **Per-user OAuth.** Authorization code with PKCE. The refresh token is encrypted for that user. The stdio file store binds the ciphertext to the user id (`token:<userId>`). A `tokens.json` written before that binding does not decrypt. Sign in again. The Postgres store binds ciphertext to tenant and user.
+- **Roles on stdio.** `WORKDAY_USER_ROLES` for the life of the process, default `worker_self`. This server does not look up Workday security groups. Live calls still use the caller's token, and Workday enforces that token.
+- **HTTP callers.** Slack request signature plus an active `identity_links` row. Identity is not taken from the message body or from model output.
+- **RBAC.** Deny overrides grant. The check runs before any Workday call. Workday security on the token is the final authority for live data.
+- **Writes.** The proposal stores the payload. A human approves with a verified identity. Commit goes through `ApprovalExecutionService` and the ledger. There is no agent tool that approves.
+- **Live operations.** Blocked until listed in `WORKDAY_VALIDATED_OPERATIONS` after you validate them in your sandbox. See [docs/SANDBOX-TESTING.md](docs/SANDBOX-TESTING.md).
+- **Production hosts.** Refused unless `WORKDAY_ALLOW_PROD=true`.
+- **OAuth scopes.** The default `openid` in `.env.example` is unverified against a Workday tenant. Set the scopes your API client actually grants after you confirm them. This repository does not validate that list.
+- **Untrusted content.** Tool results and Workday fault text are data for any model that reads them. The agents in `src/ai/` wrap tool results and tell the model that text inside the wrapper is not instructions. Fault messages are scrubbed for bearer tokens and email addresses before they are returned.
+- **Audit redaction.** Field names are matched after normalization, including `preferredName`, `descriptor`, pay amounts, and national-id, bank, and passport patterns. Email addresses and bearer tokens inside other strings are scrubbed. A name sitting in a free-text field whose name is not itself sensitive can remain. `comment` and `reason` are removed entirely.
+- **Kill switch.** `WORKDAY_DISABLED_TOOLS` turns off listed tools.
+
+Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
+
+## Limits
+
+- No sandbox validation of Workday request and response bodies is recorded in this repository. Until you add operations to `WORKDAY_VALIDATED_OPERATIONS`, live commits are refused.
+- Account linking does not verify that the Workday account which signs in is the invited user. Production requires `LINK_ACCEPT_UNVERIFIED_SIGNER=true` as an explicit acknowledgement. Calls use the `me` entry on the stored token.
+- Only self-service time off is wired through the Slack approval path.
+- The dev tenant named in `extend/README.md` is where those skills were discovered. It is not a certification of this server.
+- Stdio roles are the environment variable above. They are not derived from the token.
+
+## Layout
+
+| Task | Start at |
+| --- | --- |
+| Tool contract or schema | `src/schemas/tools/*.ts`, then `src/tools/registry.ts` |
+| RBAC or a permission id | `src/rbac/permissions.ts`, [docs/RBAC.md](docs/RBAC.md) |
+| Slack command, form, button | `src/integrations/slack/*.ts` |
+| Approval lifecycle or ledger | `src/integrations/approvals/execution.ts`, `src/store/approvals.ts` |
+| OAuth, tokens, linking | `src/auth/*.ts`, `src/integrations/link.ts`, `src/store/repos.ts` |
+| Agent prompt or toolset | `src/ai/integration-agent.ts`, `src/ai/enterprise-agent.ts` |
+| Checks | `scripts/check-*.ts` |
 
 ## License
 

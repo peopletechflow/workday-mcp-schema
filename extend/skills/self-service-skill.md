@@ -1,3 +1,13 @@
+---
+name: self-service-skill
+description: Use when the signed-in worker asks about their own time off, payslips, benefits, goals, learning, inbox, or contact details, or wants to change their own record. Do not use for another worker, for payroll changes, or for approvals.
+---
+
+> **Boundary.** This file mirrors a Workday Extend skill. The tenant copy is the source of truth. The personal-information write step below is a stop rule. The rest of the procedure follows the tenant skill.
+> This repository does not register these tool names. Do not call them on the workday-mcp-schema MCP server.
+> In this repository, a change is a preview or a propose tool, then a human confirm, then a commit in code. A yes in chat is not a submit.
+> If a step names a tool that is not in the tool list, stop and say the step is unavailable.
+
 # Self-Service Skill
 
 This skill gives the signed-in worker access to their own HR data and allows them to make
@@ -66,8 +76,9 @@ Rule: collect inputs, show preview, ask "Shall I submit this? Please confirm wit
 1. `find_worker_time_off_details`; 2. confirm entry; 3. preview; 4. on yes `update_worker_time_off_entry` with entry WID and `delete: true`; 5. present status.
 
 ### Update Personal Information
-1. Show current via `find_worker_personal_information`; 2. collect change; 3. preview current -> proposed;
-4. On yes: `create_personal_information_change_event` -> event WID; `find_detailed_personal_information_change_event` -> record WID; stage via field update tool (e.g. `update_personal_information_marital_status` — NOTE: not in this skill's tool list, add it in the Developer Agent); final confirm; `submit_personal_information_changes`.
+1. Show current via `find_worker_personal_information`.
+2. Collect the change and preview the current value and the proposed value.
+3. Stop. `update_personal_information_marital_status` is named in the tenant procedure and is not in this skill's tool list. Do not call it. The flow may open an event and submit only. Tell the user that staging this field is unavailable until the tool is added in the Developer Agent.
 
 ### Update Contact Details
 1. Read current; 2. collect change; 3. preview field, current, new (or NEW);
@@ -88,7 +99,7 @@ Rule: collect inputs, show preview, ask "Shall I submit this? Please confirm wit
 
 ## Mirror notes (workday-mcp-schema)
 
-Copied verbatim from the tenant skill (Extend app `peopletechHrBaseline_rjqhll`, tenant `bzyvydgxsb_extdev`, discovered 2026-10-20). The tenant is the source of truth.
+The personal-information write step in this mirror is a stop rule. The rest follows the tenant skill (Extend app `peopletechHrBaseline_rjqhll`, tenant `bzyvydgxsb_extdev`, discovered 2026-10-20). The tenant is the source of truth.
 
 - **Known gap:** "Update Personal Information" stages changes through `update_personal_information_marital_status`, but that tool is **not in the skill's tool list**. It is not catalogued here, and `src/safety/native-write-guard.ts` rejects it as a stage step (`KNOWN_TOOL_GAPS` in `src/agent-ready/catalog.tenant.ts`). For now, the `personal_information_change` flow can only open and submit. Add the tool in the Developer Agent, then catalogue it.
 - Tools: 39 in total. 34 are new in `catalog.tenant.ts` (19 reads, 15 writes); 5 are shared with `worker-data-skill`.

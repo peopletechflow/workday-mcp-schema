@@ -1,3 +1,13 @@
+---
+name: worker-data-skill
+description: Use when someone asks who a worker is, their job, org, contacts, service dates, or reporting line. Read-only. Do not use for time off, pay, benefits, or any change.
+---
+
+> **Boundary.** This file mirrors a Workday Extend skill. The tenant copy is the source of truth.
+> This repository does not register these tool names. Do not call them on the workday-mcp-schema MCP server.
+> In this repository, a change is a preview or a propose tool, then a human confirm, then a commit in code. A yes in chat is not a submit.
+> If a step names a tool that is not in the tool list, stop and say the step is unavailable.
+
 # Skill: worker-data-skill (read-only)
 
 Mirror of the Extend skill in app `peopletechHrBaseline_rjqhll` on tenant `bzyvydgxsb_extdev` (wd119). Built with the Workday Developer Agent; discovered 2026-10-20. The tenant is the source of truth.

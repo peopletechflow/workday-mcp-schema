@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed (showcase review)
+- Stdio token files bind AES-GCM additional data to `token:<userId>`. A `tokens.json` from before this binding does not decrypt. Sign in again.
+- Audit redaction and the stderr logger share one key predicate (normalized PII names, token and secret substrings, national-id, bank, and passport patterns). Nested log objects are walked. Email addresses and bearer tokens are scrubbed in string values and in audit `errorMessage`. Workday fault messages are scrubbed the same way before they are returned.
+- The enterprise agent wraps tool results as untrusted data, states that rule in `DEFAULT_INSTRUCTIONS`, and omits `commit_*` tools unless `allowWriteCommits` is true.
+- Stdio roles are documented as `WORKDAY_USER_ROLES` for the process. There is no Workday security-group lookup. The default OAuth scope `openid` is labeled unverified.
+- `extend/skills/` files have triggering frontmatter and a boundary box. The self-service personal-information step stops on the missing marital-status tool. Payroll and admin bodies stay the tenant text.
+- `summarizeToolResult` is described as an unused helper, not as a live audit step.
+- GitHub Actions runs `pnpm check` on pull requests. Dependabot watches npm and Actions.
+- README rewritten around what the server is, how it runs, the security model, and the limits.
+
 ### Added (local env loading)
 - `src/env/local-env.ts`: the HTTP runtime and admin CLI load `.env.local` from the working directory (override `LOCAL_ENV_FILE`) with `node:util` `parseEnv`, no new dependency. Process environment always wins; skipped when `NODE_ENV=production` or `SKIP_LOCAL_ENV=true`; a missing file is fine. Required-key validation (database URL, token encryption key) is unchanged. `check:durable` covers precedence, production skip, opt-out, missing file, and missing keys.
 

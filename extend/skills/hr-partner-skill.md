@@ -1,3 +1,13 @@
+---
+name: hr-partner-skill
+description: Use when an HR partner asks about org structure, leave, onboarding, or identity documents inside their supervisory orgs. Do not use for hires, terminations, or per-person diversity.
+---
+
+> **Boundary.** This file mirrors a Workday Extend skill. The tenant copy is the source of truth.
+> This repository does not register these tool names. Do not call them on the workday-mcp-schema MCP server.
+> In this repository, a change is a preview or a propose tool, then a human confirm, then a commit in code. A yes in chat is not a submit.
+> If a step names a tool that is not in the tool list, stop and say the step is unavailable.
+
 # Skill: hr-partner-skill
 
 > **Condensed mirror of the Developer Agent skill text.** Reconstructed from the discovery notes (`/workspace/handoff/hr-partner-tools.txt`). Extend app `peopletechHrBaseline_rjqhll`, tenant `bzyvydgxsb_extdev` (wd119), discovered 2026-10-20. The tenant is the source of truth.

@@ -6,7 +6,7 @@
  * Run: pnpm run check:mcp
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -17,6 +17,9 @@ import { buildMcpServer } from "../src/mcp-server.js";
 import { FixtureWorkdayClient } from "../src/workday/fixtures.js";
 import { FixtureWorkdayDomainClient } from "../src/workday/domain-fixtures.js";
 import { TokenStore } from "../src/auth/token-store.js";
+import { AuditLogger, redactPii } from "../src/safety/audit.js";
+import { redactFields } from "../src/observability/log.js";
+import { HttpWorkdayClient, WorkdayApiError } from "../src/workday/client.js";
 import { createPkcePair, PKCE_TTL_MS, rememberPkce, SignInRequiredError, takePkce, type OAuthTokens, type PkcePair } from "../src/auth/oauth.js";
 import { requireUserAccessToken } from "../src/session.js";
 import { createLoopbackCallbackServer, isLoopbackRedirect } from "../src/auth/loopback-callback.js";
@@ -141,6 +144,84 @@ await check("framework commit (cancel): SIGN_IN_REQUIRED keeps the preview token
   assert.ok(!second.isError, second.text);
 });
 
+await check("redactPii covers schema PII names and scrubs emails and bearer tokens", async () => {
+  const redacted = redactPii({
+    preferredName: "Ada Lovelace",
+    grossAmount: 4200,
+    nationalId: "NL123456",
+    descriptor: "Ada Lovelace",
+    hireDate: "2020-01-01",
+    summary: "ping ada@example.com with Bearer super-secret-token",
+    manager: { descriptor: "Grace Hopper" },
+  }) as Record<string, unknown>;
+  assert.equal(redacted.preferredName, "[REDACTED]");
+  assert.equal(redacted.grossAmount, "[REDACTED]");
+  assert.equal(redacted.nationalId, "[REDACTED]");
+  assert.equal(redacted.descriptor, "[REDACTED]");
+  assert.equal(redacted.hireDate, "[REDACTED]");
+  assert.equal((redacted.manager as { descriptor: string }).descriptor, "[REDACTED]");
+  assert.equal(String(redacted.summary).includes("ada@example.com"), false);
+  assert.equal(String(redacted.summary).includes("super-secret-token"), false);
+  assert.match(String(redacted.summary), /\[REDACTED_EMAIL\]/);
+  assert.match(String(redacted.summary), /Bearer \[REDACTED\]/);
+
+  const config = makeConfig();
+  const audit = new AuditLogger(config.auditLogPath);
+  await audit.log({
+    ts: new Date().toISOString(),
+    userId: USER,
+    tool: "get_my_worker_profile",
+    inputs: { preferredName: "Ada Lovelace" },
+    result: "error",
+    latencyMs: 1,
+    errorMessage: "failed for ada@example.com Bearer super-secret-token",
+  });
+  const log = readFileSync(config.auditLogPath, "utf8");
+  assert.equal(log.includes("Ada Lovelace"), false);
+  assert.equal(log.includes("ada@example.com"), false);
+  assert.equal(log.includes("super-secret-token"), false);
+  assert.match(log, /\[REDACTED_EMAIL\]/);
+  assert.match(log, /Bearer \[REDACTED\]/);
+});
+
+await check("stderr logger redacts nested fields with the same key predicate", () => {
+  const out = redactFields({
+    evt: "sample",
+    nested: { preferredName: "Ada Lovelace", note: "ada@example.com Bearer super-secret-token" },
+    items: [{ grossAmount: 10 }],
+  }) as { nested: { preferredName: string; note: string }; items: Array<{ grossAmount: string }> };
+  assert.equal(out.nested.preferredName, "[redacted]");
+  assert.equal(out.nested.note, "[redacted]");
+  assert.equal(out.items[0]!.grossAmount, "[redacted]");
+  assert.equal(JSON.stringify(out).includes("Ada Lovelace"), false);
+  assert.equal(JSON.stringify(out).includes("super-secret-token"), false);
+});
+
+await check("Workday fault text drops emails and bearer tokens before the model sees it", async () => {
+  const config = loadConfig({
+    WORKDAY_USE_FIXTURES: "false",
+    WORKDAY_ABSENCE_API_VERSION: "v1",
+    WORKDAY_VALIDATED_OPERATIONS: "balances.list",
+    WORKDAY_OAUTH_CLIENT_ID: "client",
+    WORKDAY_OAUTH_CLIENT_SECRET: "secret-value",
+    WORKDAY_BASE_URL: "https://wd2-impl-services1.workday.com",
+    WORKDAY_TENANT: "sandbox_tenant",
+  });
+  const fetchImpl = (async () =>
+    new Response(JSON.stringify({ message: "Contact ada@example.com. Bearer super-secret-token" }), {
+      status: 400,
+    })) as typeof fetch;
+  const client = new HttpWorkdayClient(config, { apiVersion: "v1", validatedOperations: ["balances.list"], timeoutMs: 5000 }, fetchImpl);
+  await assert.rejects(() => client.getMyTimeOffBalances("at"), (err: unknown) => {
+    assert.ok(err instanceof WorkdayApiError);
+    assert.equal(err.message.includes("ada@example.com"), false);
+    assert.equal(err.message.includes("super-secret-token"), false);
+    assert.match(err.message, /\[REDACTED_EMAIL\]/);
+    assert.match(err.message, /Bearer \[REDACTED\]/);
+    return true;
+  });
+});
+
 await check("audit log redacts free-text comment and is owner-only", async () => {
   const config = makeConfig();
   const { call } = await connect(config, baseEnv());
@@ -211,6 +292,42 @@ await check("loopback OAuth callback: valid state stores tokens once; replayed o
   } finally {
     server.close();
   }
+});
+
+await check("token file binds ciphertext to the user id", async () => {
+  const config = makeConfig({ live: true });
+  const store = new TokenStore(config.tokenStorePath, LIVE_KEY);
+  await store.set("alice", { ...liveToken(), accessToken: "alice-token" });
+  await store.set("bob", { ...liveToken(), accessToken: "bob-token" });
+  const rows = JSON.parse(readFileSync(config.tokenStorePath, "utf8")) as Array<{ userId: string; ciphertext: string; iv: string; tag: string }>;
+  const alice = rows.find((r) => r.userId === "alice");
+  const bob = rows.find((r) => r.userId === "bob");
+  assert.ok(alice && bob);
+  const swapped = rows.map((r) => (r.userId === "bob" ? { ...r, ciphertext: alice.ciphertext, iv: alice.iv, tag: alice.tag } : r));
+  writeFileSync(config.tokenStorePath, JSON.stringify(swapped));
+  await assert.rejects(() => store.get("bob"));
+  assert.equal((await store.get("alice"))?.accessToken, "alice-token");
+});
+
+await check("extend skills declare when to use them, and self-service stops on the missing marital-status tool", () => {
+  const dir = new URL("../extend/skills/", import.meta.url);
+  const files = readdirSync(dir).filter((name) => name.endsWith(".md"));
+  assert.equal(files.length, 6);
+  for (const name of files) {
+    const text = readFileSync(new URL(name, dir), "utf8");
+    assert.match(text, /^---\nname: /);
+    assert.match(text, /^description: /m);
+    assert.match(text, /\*\*Boundary\.\*\*/);
+  }
+  const self = readFileSync(new URL("self-service-skill.md", dir), "utf8");
+  assert.match(self, /Do not call it/);
+  assert.match(self, /update_personal_information_marital_status/);
+  const payroll = readFileSync(new URL("payroll-viewer-skill.md", dir), "utf8");
+  const admin = readFileSync(new URL("admin-skill.md", dir), "utf8");
+  assert.match(payroll, /The body below is the tenant text, unchanged\./);
+  assert.match(admin, /The body below is the tenant text, unchanged\./);
+  assert.match(payroll, /^# Payroll Viewer Skill/m);
+  assert.match(admin, /^# Admin Skill/m);
 });
 
 await check("refresh: refused grant deletes token and asks for sign-in; outage keeps token", async () => {

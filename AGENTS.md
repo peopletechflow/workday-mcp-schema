@@ -18,6 +18,7 @@ Short on purpose: this file is loaded into every agent session. Details live in 
 - Workday live calls must be listed in `WORKDAY_VALIDATED_OPERATIONS`; no new endpoint without a cited contract (docs/SANDBOX-TESTING.md).
 - Keep deny-overrides-grant RBAC (docs/RBAC.md), team/org/pay-group proofs, and BP submission intact.
 - All model calls go through `src/ai/` (AI SDK). No raw provider fetch elsewhere. Agent context rules: docs/CONTEXT-ENGINEERING.md.
+- `extend/skills/*.md` mirrors Workday tenant skills. Read `extend/README.md` only when the task is that mirror. Those tool names are not tools in `src/tools/registry.ts`. Do not add an MCP tool that calls one of them directly.
 
 ## Where to look
 | Task | Start at |

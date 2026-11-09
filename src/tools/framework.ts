@@ -28,7 +28,7 @@ export type ToolDeps = {
   tokenStore: TokenStore;
   pendingPkce: Map<string, PkcePair>;
   resolveUserId: () => string;
-  /** Caller roles (env in fixtures; Workday security groups in production). */
+  /** Caller roles from WORKDAY_USER_ROLES on stdio. Not a Workday security-group lookup. */
   resolveUserRoles: () => Role[];
   /** Lowest-level user permission assignments (grants/denies). Optional; fail closed without grants. */
   assignments?: AssignmentStore;
