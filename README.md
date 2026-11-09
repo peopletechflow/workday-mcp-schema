@@ -2,13 +2,17 @@
 
 Permission-safe **Workday MCP server** scaffold (Node.js / TypeScript). Task-shaped tools only, per-user OAuth 2.0 (auth code + PKCE), preview-then-confirm writes, idempotent commits, and audited calls with PII redaction.
 
-Intended owner: GitHub user **peopletechflow** (private repo).
+> **Security.** Per-user OAuth (never a shared account), RBAC before every Workday call, preview-then-confirm writes, idempotent commits, and audited calls with PII redaction. Production tenants stay blocked unless `WORKDAY_ALLOW_PROD=true`. See [SECURITY.md](SECURITY.md) for the model and how to report a vulnerability.
+>
+> **Contributing.** Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+>
+> **Scope.** Independent project, not affiliated with or endorsed by Workday. Designed for sandbox / implementation tenants; fixture mode is the default. Not yet run against a production Workday tenant. Fixture data is invented. Local checks: `pnpm check`. No CI workflow is installed in this repository.
 
 ## Architecture + RBAC
 
 This repo is layer 3 of the Workday agent stack. Prefer **native Agent-Ready MCP tools** first, then **Custom Agent Actions (Orchestrate)** for tenant-specific process logic. Use this baseline for cross-tenant patterns, preview/commit/idempotency/audit guardrails, or multi-system composition. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Layer 1 catalog:** `src/agent-ready/` seeds/syncs a local catalog of native Agent-Ready tools (name, WID, Basic|Advanced|Prompt, product area). Meta tools `list_agent_ready_tools` / `get_agent_ready_tool` and resource `agent-ready://catalog` document that catalog for local/dev — they do **not** re-implement Workday MCP. The seed is partial (public docs only); refresh with `pnpm sync:agent-ready --csv <Explorer.csv>` (see `src/agent-ready/sync.md`). Runtime still calls Workday MCP with dynamic schemas. It also includes 152 **tenant-discovered** tools (`src/agent-ready/catalog.tenant.ts`): 13 from [`worker-data-skill`](extend/skills/worker-data-skill.md), 34 from [`self-service-skill`](extend/skills/self-service-skill.md), 41 from [`manager-actions-skill`](extend/skills/manager-actions-skill.md), 21 from [`hr-partner-skill`](extend/skills/hr-partner-skill.md) 22 from [`payroll-viewer-skill`](extend/skills/payroll-viewer-skill.md) (read-only) and 21 from [`admin-skill`](extend/skills/admin-skill.md) (tenant-wide read, self-only writes), with role scopes in `src/rbac/agent-ready.ts`. The merged catalog has 158 tools: 125 reads and 33 writes. Native self-service writes run only through the preview → confirm guard in `src/safety/native-write-guard.ts`.
+**Layer 1 catalog:** `src/agent-ready/` seeds/syncs a local catalog of native Agent-Ready tools (name, WID, Basic|Advanced|Prompt, product area). Meta tools `list_agent_ready_tools` / `get_agent_ready_tool` and resource `agent-ready://catalog` document that catalog for local/dev - they do **not** re-implement Workday MCP. The seed is partial (public docs only); refresh with `pnpm sync:agent-ready --csv <Explorer.csv>` (see `src/agent-ready/sync.md`). Runtime still calls Workday MCP with dynamic schemas. It also includes 152 **tenant-discovered** tools (`src/agent-ready/catalog.tenant.ts`): 13 from [`worker-data-skill`](extend/skills/worker-data-skill.md), 34 from [`self-service-skill`](extend/skills/self-service-skill.md), 41 from [`manager-actions-skill`](extend/skills/manager-actions-skill.md), 21 from [`hr-partner-skill`](extend/skills/hr-partner-skill.md) 22 from [`payroll-viewer-skill`](extend/skills/payroll-viewer-skill.md) (read-only) and 21 from [`admin-skill`](extend/skills/admin-skill.md) (tenant-wide read, self-only writes), with role scopes in `src/rbac/agent-ready.ts`. The merged catalog has 158 tools: 125 reads and 33 writes. Native self-service writes run only through the preview → confirm guard in `src/safety/native-write-guard.ts`.
 
 Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `payroll_viewer`, `admin`) before any Workday call. The roles map to Workday security groups and to the ASOR skill's Available To list. Enterprise Layer-3 also supports **lowest-level user permission assignments** (`tool:<name>` grants/denies via `WORKDAY_USER_GRANTS` / `WORKDAY_USER_DENIES` or `WORKDAY_RBAC_ASSIGNMENTS_PATH`) so you can assign least privilege per user beyond coarse roles. In dev, set roles with `WORKDAY_USER_ROLES`. Run `pnpm run check:rbac` to verify that every tool is mapped. See [docs/RBAC.md](docs/RBAC.md).
 
@@ -21,7 +25,7 @@ Every tool call passes an RBAC check (`worker_self`, `manager`, `hr_partner`, `p
 | "Show me my remaining PTO and sick balance." | `get_my_time_off_balance` | Native MCP Explorer / agents may not expose this as a flat self-service read with our schema; custom read keeps fields minimal. |
 | "Request next Friday off after I confirm the details." | `preview_request_time_off` → `commit_request_time_off` | Writes must stay gated (preview token + confirmation + idempotency) and submit through the Workday business process. |
 
-## Auth flow (per user — never a shared account)
+## Auth flow (per user - never a shared account)
 
 1. Register a Workday API client for **OAuth 2.0 authorization code** (PKCE where supported).
 2. The MCP server builds an authorize URL with `code_challenge` (S256) and `state`.
@@ -98,7 +102,7 @@ Workday HTTP is behind `WorkdayClient`. Default `WORKDAY_USE_FIXTURES=true` uses
 
 ```bash
 cp .env.example .env
-# edit .env — sandbox tenant + OAuth client placeholders
+# edit .env - sandbox tenant + OAuth client placeholders
 
 pnpm install
 pnpm run typecheck
@@ -131,7 +135,7 @@ pnpm run dev
 
 ### Example write flow
 
-1. `get_my_time_off_balance` — confirm available days.
+1. `get_my_time_off_balance` - confirm available days.
 2. `preview_request_time_off` with dates / type / quantity → show `summary` to the user.
 3. On explicit confirmation: `commit_request_time_off` with `previewToken`, a new `idempotencyKey`, and `userConfirmed: true`.
 
@@ -152,6 +156,9 @@ Production runtime: Postgres state, admin-invited account linking through Workda
 - Document which fields leave Workday and where they go before production (GDPR / SOC 2 / SOX).
 - Before each Workday semi-annual release, re-run contract tests against the preview tenant.
 
-## License
+## License and disclaimer
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+This software is provided as is, without warranty of any kind. The maintainers and PeopleTech Flow B.V. accept no responsibility or liability for any use, data, HR decisions, or outcomes. You are responsible for reviewing, securing, and testing it in your own tenant and for complying with your Workday agreements and applicable law.
+
