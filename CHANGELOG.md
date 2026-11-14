@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed (tenant wording)
+- Docs credit the 2026-10-20 Workday Developer Agent discovery of the Agent-Ready catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) and the Extend skills on developer tenant `bzyvydgxsb_extdev` (wd119). They state that the runtime defaults to fixture mode, that `WORKDAY_VALIDATED_OPERATIONS` is empty by default, that `HttpWorkdayClient` has no recorded live run, and that this server has not been validated live and is not certified for production.
+
 ### Changed (showcase review)
 - Stdio token files bind AES-GCM additional data to `token:<userId>`. A `tokens.json` from before this binding does not decrypt. Sign in again.
 - Audit redaction and the stderr logger share one key predicate (normalized PII names, token and secret substrings, national-id, bank, and passport patterns). Nested log objects are walked. Email addresses and bearer tokens are scrubbed in string values and in audit `errorMessage`. Workday fault messages are scrubbed the same way before they are returned.

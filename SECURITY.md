@@ -2,7 +2,7 @@
 
 ## Status
 
-This project has not been security-reviewed by a third party. It has not run against a production Workday tenant. Do not use it with real employee data until you have done your own review. Live Workday behaviour depends on your tenant's configuration, and that configuration is not verified by this repository's tests. Develop against a sandbox / implementation tenant only. Production requires an explicit `WORKDAY_ALLOW_PROD=true`.
+This project has not been security-reviewed by a third party. The Agent-Ready tool catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) and the Extend skills were discovered on the Workday developer tenant `bzyvydgxsb_extdev` (wd119) on 2026-10-20 via the Workday Developer Agent. This runtime server has not been validated live, has not run against a production Workday tenant, and is not certified for production. Do not use it with real employee data until you have done your own review. Live Workday behaviour depends on your tenant's configuration, and that configuration is not verified by this repository's tests. Develop against a sandbox / implementation tenant only. Production requires an explicit `WORKDAY_ALLOW_PROD=true`.
 
 ## Reporting a vulnerability
 

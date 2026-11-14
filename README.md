@@ -1,6 +1,6 @@
 # workday-mcp-schema
 
-A TypeScript MCP server baseline for Workday, from PeopleTech Flow B.V. in Utrecht. It exposes task-shaped tools, per-user OAuth, and preview-then-confirm writes. Fixture mode is the default. It has not been run against a production tenant. Live Workday behavior depends on the customer's tenant, and the tests in this repository do not verify that tenant.
+A TypeScript MCP server baseline for Workday, from PeopleTech Flow B.V. in Utrecht. It exposes task-shaped tools, per-user OAuth, and preview-then-confirm writes. Fixture mode is the default (`WORKDAY_USE_FIXTURES=true`), with invented people. The Agent-Ready tool catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) and the Extend skills were discovered on the Workday developer tenant `bzyvydgxsb_extdev` (wd119) on 2026-10-20 via the Workday Developer Agent. This runtime server has not been validated live, has not been run against a production tenant, and is not certified for production. Live Workday behavior depends on the customer's tenant, and the tests in this repository do not verify that tenant.
 
 ## What it is
 
@@ -72,10 +72,10 @@ Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 
 ## Limits
 
-- No sandbox validation of Workday request and response bodies is recorded in this repository. Until you add operations to `WORKDAY_VALIDATED_OPERATIONS`, live commits are refused.
+- No live run of `HttpWorkdayClient` is recorded, and no signed-off request/response contract is recorded. `WORKDAY_VALIDATED_OPERATIONS` is empty by default, pending sign-off against a sandbox tenant, so live absence operations stay refused. Body and filter field names still need confirmation against the tenant REST directory.
 - Account linking does not verify that the Workday account which signs in is the invited user. Production requires `LINK_ACCEPT_UNVERIFIED_SIGNER=true` as an explicit acknowledgement. Calls use the `me` entry on the stored token.
 - Only self-service time off is wired through the Slack approval path.
-- The dev tenant named in `extend/README.md` is where those skills were discovered. It is not a certification of this server.
+- The Extend skills and the Agent-Ready tool catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) were discovered on the Workday developer tenant `bzyvydgxsb_extdev` (wd119) on 2026-10-20 via the Workday Developer Agent (see `extend/README.md`). This runtime server has not been validated live and is not certified for production.
 - Stdio roles are the environment variable above. They are not derived from the token.
 
 ## Layout
@@ -96,4 +96,4 @@ MIT. See [LICENSE](LICENSE).
 
 This software is provided as is, without warranty of any kind. The maintainers and PeopleTech Flow B.V. accept no responsibility or liability for any use, data, HR decisions or outcomes. You are responsible for your own tenant, security and compliance, including your Workday agreements and applicable law.
 
-Independent project, not affiliated with or endorsed by Workday, Inc. Workday is a trademark of Workday, Inc. Built for sandbox and implementation tenants, with fixture mode as the default. Not yet run against a production tenant. Fixture data is invented.
+Independent project, not affiliated with or endorsed by Workday, Inc. Workday is a trademark of Workday, Inc. Built for sandbox and implementation tenants, with fixture mode as the default (`WORKDAY_USE_FIXTURES=true`) and invented fixture people. The Agent-Ready catalog and Extend skills were discovered on developer tenant `bzyvydgxsb_extdev` (wd119) on 2026-10-20. This runtime server has not been validated live, has not been run against a production tenant, and is not certified for production.

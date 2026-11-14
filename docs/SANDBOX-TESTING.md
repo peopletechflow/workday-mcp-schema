@@ -1,6 +1,8 @@
 # Testing against a Workday sandbox tenant
 
-Nothing in this repo has been run against a real tenant. Offline checks prove the logic, not Workday's contract. Use an implementation or sandbox tenant only (`WORKDAY_ALLOW_PROD` stays false).
+The Agent-Ready tool catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) and the Extend skills were discovered on the Workday developer tenant `bzyvydgxsb_extdev` (wd119) on 2026-10-20 via the Workday Developer Agent. The Layer-3 Zod contracts in `src/schemas` use official Workday ID types, and the three wired absence REST paths come from the public Workday REST Directory.
+
+The server defaults to fixture mode (`WORKDAY_USE_FIXTURES=true`) with invented people. Live absence operations are gated by `WORKDAY_VALIDATED_OPERATIONS`, which is empty by default, pending sign-off against a sandbox tenant. No live run of `HttpWorkdayClient` and no signed-off request/response contract is recorded yet. Body and filter field names still need confirmation against the tenant REST directory. Offline checks cover the server logic. A signed-off contract still requires the sandbox steps below. This runtime server has not been validated live and is not certified for production. Use an implementation or sandbox tenant only (`WORKDAY_ALLOW_PROD` stays false).
 
 ## What works offline today
 
