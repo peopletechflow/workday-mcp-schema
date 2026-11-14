@@ -24,6 +24,7 @@ import {
   type NotionConfig,
 } from "../src/integrations/index.js";
 import { buildIntegrationToolset, wrapUntrusted, INTEGRATION_SYSTEM_PROMPT } from "../src/ai/integration-agent.js";
+import { isSlackResponseUrl } from "../src/integrations/slack/api.js";
 import { buildLayer3AiTools, DEFAULT_INSTRUCTIONS } from "../src/ai/enterprise-agent.js";
 import { InMemoryAssignmentStore, RbacDeniedError, type Role } from "../src/rbac/index.js";
 import {
@@ -752,7 +753,7 @@ await check(
     const o3 = await handleApprovalAction(evil, signed(evil), d); // already decided -> NOT_PENDING, but the point is the URL
     assert.equal(o3.status, 403);
     assert.ok(
-      s.responses.every((x) => x.url.startsWith("https://hooks.slack.com/")),
+      s.responses.every((x) => isSlackResponseUrl(x.url)),
       "non-Slack response_url never called",
     );
   },
@@ -1036,6 +1037,15 @@ function fakeSlack(delayMs = 0, ok = true) {
 }
 let tsCounter = 0;
 const sig = (b: string) => signed(b, NOW + (tsCounter++ % 200));
+/** True when a modal payload embeds a Slack response URL. Host is checked with URL.hostname. */
+function modalContainsSlackHook(view: unknown): boolean {
+  const text = JSON.stringify(view);
+  for (const match of text.matchAll(/https?:\/\/[^"\\\s]+/g)) {
+    if (isSlackResponseUrl(match[0])) return true;
+  }
+  return false;
+}
+
 const cmdBody = (text = "", o: Record<string, string> = {}) =>
   new URLSearchParams({
     team_id: "T0ALLOWED",
@@ -1072,7 +1082,10 @@ await check(
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0]!.triggerId, "13345224609.738474920.8088930838d88f008e0");
     const v = JSON.stringify(f.calls[0]!.view);
-    assert.ok(!v.includes("alice") && !v.includes("acme") && !v.includes(SECRET) && !v.includes("hooks.slack.com"));
+    assert.equal(v.includes("alice"), false);
+    assert.equal(v.includes("acme"), false);
+    assert.equal(v.includes(SECRET), false);
+    assert.equal(modalContainsSlackHook(f.calls[0]!.view), false);
   },
 );
 await check(
