@@ -18,6 +18,9 @@ function redactLogValue(key: string, value: unknown, depth: number): unknown {
   return value;
 }
 
-export function createLogger(base: Record<string, unknown> = {}, sink: (line: string) => void = (l) => process.stderr.write(l + "\n")): LogFn {
+export function createLogger(
+  base: Record<string, unknown> = {},
+  sink: (line: string) => void = (l) => process.stderr.write(l + "\n"),
+): LogFn {
   return (fields) => sink(JSON.stringify({ ts: new Date().toISOString(), ...base, ...redactFields(fields) }));
 }

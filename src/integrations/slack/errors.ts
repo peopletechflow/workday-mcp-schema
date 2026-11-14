@@ -12,11 +12,16 @@ export type FormField = "start" | "end" | "type" | "days";
 
 export function slackErrorMessage(e: unknown, commandName: string): { text: string; field: FormField } | undefined {
   if (e instanceof LinkRequiredError) {
-    return { text: `Your Workday account is not linked or its sign-in expired. Run \`${commandName} link\`, then try again.`, field: "start" };
+    return {
+      text: `Your Workday account is not linked or its sign-in expired. Run \`${commandName} link\`, then try again.`,
+      field: "start",
+    };
   }
   if (e instanceof TokenRefreshUnavailableError) return { text: e.message, field: "start" };
-  if (e instanceof RbacDeniedError) return { text: "You are not allowed to do this. Ask your Workday security admin.", field: "start" };
-  if (e instanceof ContractNotValidatedError) return { text: "Submitting to Workday is not enabled for this deployment yet.", field: "start" };
+  if (e instanceof RbacDeniedError)
+    return { text: "You are not allowed to do this. Ask your Workday security admin.", field: "start" };
+  if (e instanceof ContractNotValidatedError)
+    return { text: "Submitting to Workday is not enabled for this deployment yet.", field: "start" };
   if (e instanceof ApprovalError) {
     switch (e.code) {
       case "NO_POLICY":
@@ -36,7 +41,10 @@ export function slackErrorMessage(e: unknown, commandName: string): { text: stri
         return { text: "Only the person who requested this can submit it.", field: "start" };
       case "HASH_MISMATCH":
       case "TAMPERED":
-        return { text: "This request changed since it was sent for approval. Ask the requester to submit a new one.", field: "start" };
+        return {
+          text: "This request changed since it was sent for approval. Ask the requester to submit a new one.",
+          field: "start",
+        };
       case "NOT_FOUND":
         return { text: "Unknown request, or you are not involved in it.", field: "start" };
       case "NOT_PENDING":

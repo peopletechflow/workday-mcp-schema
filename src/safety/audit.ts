@@ -10,10 +10,10 @@ export type AuditEntry = {
   userId: string;
   tool: string;
   inputs: unknown;
-  result: "ok" | "error" | "denied";
-  workdayEventId?: string;
+  result: "ok" | "error" | "denied" | "unknown";
+  workdayEventId?: string | undefined;
   latencyMs: number;
-  errorMessage?: string;
+  errorMessage?: string | undefined;
 };
 
 /** Deep-redact known PII / secret keys; hash long opaque IDs lightly for correlation. */

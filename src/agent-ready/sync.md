@@ -18,15 +18,15 @@ The seed in `catalog.generated.ts` is built from **public** Workday developer do
 
 Export from [MCP Explorer](https://developer.workday.com/mcp-explorer) (updates weekly on Tuesdays) or build a CSV with at least:
 
-| Column | Required | Notes |
-| --- | --- | --- |
-| `name` | yes | Exact Workday MCP tool name |
-| `wid` | recommended | ASOR `agent_resource.id` |
-| `type` or `kind` | yes | `basic` \| `advanced` \| `prompt` (aliases: Basic/Advanced/Prompt) |
-| `description` | yes | Tool description |
-| `product line` / `productArea` / `product_area` | no | e.g. Workforce, Financials |
-| `operationType` / `operation_type` | no | `CREATE` \| `PATCH` \| `VIEW` |
-| `requiredPromptTools` / `required_prompt_tools` | no | Comma-separated prompt tool names |
+| Column                                          | Required    | Notes                                                              |
+| ----------------------------------------------- | ----------- | ------------------------------------------------------------------ |
+| `name`                                          | yes         | Exact Workday MCP tool name                                        |
+| `wid`                                           | recommended | ASOR `agent_resource.id`                                           |
+| `type` or `kind`                                | yes         | `basic` \| `advanced` \| `prompt` (aliases: Basic/Advanced/Prompt) |
+| `description`                                   | yes         | Tool description                                                   |
+| `product line` / `productArea` / `product_area` | no          | e.g. Workforce, Financials                                         |
+| `operationType` / `operation_type`              | no          | `CREATE` \| `PATCH` \| `VIEW`                                      |
+| `requiredPromptTools` / `required_prompt_tools` | no          | Comma-separated prompt tool names                                  |
 
 Header matching is case-insensitive; spaces and underscores are normalized.
 
@@ -87,5 +87,5 @@ pnpm run typecheck && pnpm run build && pnpm run check:rbac
 ## What this catalog is not
 
 - No `call_*` passthrough tools that pretend to hit Workday.
-- No hard-coded dependency for production agent prompts — Workday’s change policy treats renames as non-breaking for agents that rediscover schemas.
+- No hard-coded dependency for production agent prompts, Workday’s change policy treats renames as non-breaking for agents that rediscover schemas.
 - Custom Layer-3 tools in `src/tools/` stay separate and unchanged.

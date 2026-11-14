@@ -10,7 +10,11 @@ export type Sealed = { keyId: string; iv: string; tag: string; ciphertext: strin
 
 export class KeyRing {
   private readonly keys = new Map<string, Buffer>();
-  constructor(readonly activeKeyId: string, active: Buffer, previous?: { id: string; key: Buffer }) {
+  constructor(
+    readonly activeKeyId: string,
+    active: Buffer,
+    previous?: { id: string; key: Buffer },
+  ) {
     if (active.length !== 32) throw new Error("Encryption key must be 32 bytes (base64).");
     this.keys.set(activeKeyId, active);
     if (previous) {
@@ -21,10 +25,12 @@ export class KeyRing {
   static fromEnv(env: NodeJS.ProcessEnv): KeyRing {
     const raw = env.TOKEN_ENCRYPTION_KEY;
     const id = env.TOKEN_ENCRYPTION_KEY_ID;
-    if (!raw || !id) throw new Error("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_ID are required (no fallback key).");
-    const prev = env.TOKEN_ENCRYPTION_KEY_PREVIOUS && env.TOKEN_ENCRYPTION_KEY_PREVIOUS_ID
-      ? { id: env.TOKEN_ENCRYPTION_KEY_PREVIOUS_ID, key: Buffer.from(env.TOKEN_ENCRYPTION_KEY_PREVIOUS, "base64") }
-      : undefined;
+    if (!raw || !id)
+      throw new Error("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_ID are required (no fallback key).");
+    const prev =
+      env.TOKEN_ENCRYPTION_KEY_PREVIOUS && env.TOKEN_ENCRYPTION_KEY_PREVIOUS_ID
+        ? { id: env.TOKEN_ENCRYPTION_KEY_PREVIOUS_ID, key: Buffer.from(env.TOKEN_ENCRYPTION_KEY_PREVIOUS, "base64") }
+        : undefined;
     return new KeyRing(id, Buffer.from(raw, "base64"), prev);
   }
   seal(plaintext: string, aad: string): Sealed {
@@ -32,7 +38,12 @@ export class KeyRing {
     const c = createCipheriv("aes-256-gcm", this.keys.get(this.activeKeyId)!, iv);
     c.setAAD(Buffer.from(aad));
     const ct = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
-    return { keyId: this.activeKeyId, iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), ciphertext: ct.toString("base64") };
+    return {
+      keyId: this.activeKeyId,
+      iv: iv.toString("base64"),
+      tag: c.getAuthTag().toString("base64"),
+      ciphertext: ct.toString("base64"),
+    };
   }
   open(s: Sealed, aad: string): string {
     const key = this.keys.get(s.keyId);

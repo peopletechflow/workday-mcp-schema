@@ -11,13 +11,12 @@ import { IdempotencyStore } from "./safety/idempotency.js";
 import { PreviewStore } from "./safety/preview-store.js";
 import { HttpWorkdayClient, type WorkdayClient } from "./workday/client.js";
 import { FixtureWorkdayClient } from "./workday/fixtures.js";
-import { registerGetMyTimeOffBalance } from "./tools/get-my-time-off-balance.js";
-import { registerPreviewRequestTimeOff } from "./tools/preview-request-time-off.js";
-import { registerCommitRequestTimeOff } from "./tools/commit-request-time-off.js";
-import { registerScaffoldTools } from "./tools/scaffold-tools.js";
-import { registerAgentReadyCatalog } from "./tools/agent-ready-catalog.js";
+import { registerOutcomeTools } from "./tools/outcome-tools.js";
 import { assertRegistryInvariants } from "./tools/registry.js";
 import { registeredToolNames } from "./tools/framework.js";
+import { SlidingWindowRateLimiter } from "./safety/rate-limit.js";
+import { InMemoryToolMetrics } from "./observability/tool-metrics.js";
+import { AGENT_READY_CATALOG } from "./agent-ready/index.js";
 import { FixtureWorkdayDomainClient } from "./workday/domain-fixtures.js";
 import { HttpWorkdayDomainClient, type WorkdayDomainClient } from "./workday/domain.js";
 import { createAssignmentStore, resolveRolesFromEnv, type Role } from "./rbac/index.js";
@@ -38,8 +37,10 @@ export function buildMcpServer(opts: McpServerOptions) {
   const idempotency = new IdempotencyStore();
   const pendingPkce = new Map<string, PkcePair>();
   const client =
-    opts.client ?? (config.useFixtures ? new FixtureWorkdayClient() : new HttpWorkdayClient(config, workdayClientOptions(config)));
-  const domain = opts.domain ?? (config.useFixtures ? new FixtureWorkdayDomainClient() : new HttpWorkdayDomainClient(config));
+    opts.client ??
+    (config.useFixtures ? new FixtureWorkdayClient() : new HttpWorkdayClient(config, workdayClientOptions(config)));
+  const domain =
+    opts.domain ?? (config.useFixtures ? new FixtureWorkdayDomainClient() : new HttpWorkdayDomainClient(config));
 
   // MCP stdio sessions are typically single-user; override via WORKDAY_USER_ID.
   const resolveUserId = (): string => env.WORKDAY_USER_ID?.trim() || "local-user";
@@ -69,16 +70,19 @@ export function buildMcpServer(opts: McpServerOptions) {
     resolveUserId,
     resolveUserRoles,
     assignments,
+    rateLimit: new SlidingWindowRateLimiter({
+      readLimit: config.rateLimitPerMinute,
+      writeLimit: config.rateLimitWritePerMinute,
+      windowMs: config.rateLimitWindowMs,
+    }),
+    metrics: new InMemoryToolMetrics(),
   };
 
-  registerGetMyTimeOffBalance(server, deps);
-  registerPreviewRequestTimeOff(server, deps);
-  registerCommitRequestTimeOff(server, deps);
-  registerScaffoldTools(server, deps);
-  registerAgentReadyCatalog(server, deps);
+  registerOutcomeTools(server, deps);
 
   // Fail closed if registered tools drift from the registry (no passthrough, no payroll writes).
-  assertRegistryInvariants(registeredToolNames(server));
+  const catalogNames = config.exposeFullCatalog ? AGENT_READY_CATALOG.tools.map((tool) => tool.name) : [];
+  assertRegistryInvariants(registeredToolNames(server), { catalogNames });
 
   return { server, deps };
 }

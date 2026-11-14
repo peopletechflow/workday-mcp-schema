@@ -3,7 +3,7 @@
  *
  * Rule (manager-actions-skill): resolve the manager via find_staffing_workers(contextInstanceId "me"),
  * then team = list_worker_direct_reports, recursing into reports where hasManagerRole is true
- * (depth cap 5) — i.e. the list_indirect_reports recipe. Workers not in the team are refused.
+ * (depth cap 5), i.e. the list_indirect_reports recipe. Workers not in the team are refused.
  *
  * verifyTeamScope() returns a TeamScope that only this module can mint (tracked in a WeakSet),
  * with a short TTL. assertAgentReadyScope() accepts a manager's non-self target only when it is
@@ -50,13 +50,21 @@ export async function verifyTeamScope(adapter: TeamScopeAdapter, now: number = D
 }
 
 /** True only for a TeamScope minted by verifyTeamScope, unexpired, and (when known) for this caller. */
-export function isValidTeamScope(scope: TeamScope | undefined, callerWid?: string, now: number = Date.now()): scope is TeamScope {
+export function isValidTeamScope(
+  scope: TeamScope | undefined,
+  callerWid?: string,
+  now: number = Date.now(),
+): scope is TeamScope {
   if (!scope || !MINTED.has(scope)) return false;
   if (scope.expiresAt < now) return false;
   if (callerWid && scope.managerWid !== callerWid) return false;
   return true;
 }
 
-export function isInVerifiedTeam(scope: TeamScope | undefined, targetWid: string | undefined, callerWid?: string): boolean {
+export function isInVerifiedTeam(
+  scope: TeamScope | undefined,
+  targetWid: string | undefined,
+  callerWid?: string,
+): boolean {
   return !!targetWid && isValidTeamScope(scope, callerWid) && scope.memberIds.has(targetWid);
 }

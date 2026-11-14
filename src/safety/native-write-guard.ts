@@ -22,6 +22,7 @@ import {
 import type { Role } from "../rbac/roles.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import type { PreviewStore } from "./preview-store.js";
+import { classifyCommitFailure } from "./commit-outcome.js";
 
 export type NativeBpFlow =
   | "request_time_off"
@@ -99,7 +100,11 @@ export const NATIVE_WRITE_FLOWS: Readonly<Record<NativeBpFlow, NativeBpFlowDef>>
     ],
     submit: "submit_home_contact_change",
   },
-  goal_progress: { open: "create_worker_goal_events", stage: ["edit_worker_goals"], submit: "submit_worker_goal_events" },
+  goal_progress: {
+    open: "create_worker_goal_events",
+    stage: ["edit_worker_goals"],
+    submit: "submit_worker_goal_events",
+  },
   approve_step: { stage: [], submit: "approve_business_process_event_step" },
   deny_step: { stage: [], submit: "deny_business_process_event_step" },
   // No PATCH field staging after initiate_change_job in this tenant: single-step initiate.
@@ -145,10 +150,10 @@ export type PreviewApprovers =
 export type StagedWritePlan = {
   flow: NativeBpFlow;
   /** Existing BP event (approve/deny, or a routed event): approvers are read from it. */
-  eventWid?: string;
+  eventWid?: string | undefined;
   /** BP step actions: worker the step awaits (supplied by caller code from the step/task read). */
-  awaitingApproverWid?: string;
-  details?: WritePreviewDetails;
+  awaitingApproverWid?: string | undefined;
+  details?: WritePreviewDetails | undefined;
   /** Human-readable current -> proposed summary shown to the user. */
   summary: string;
   /**
@@ -156,7 +161,7 @@ export type StagedWritePlan = {
    * worker acted on (must pass team / org scope).
    */
   contextInstanceId: string;
-  open?: NativeCall;
+  open?: NativeCall | undefined;
   stage: NativeCall[];
   submit: NativeCall;
 };
@@ -177,7 +182,8 @@ const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim().
 
 function requireUserEffectiveDate(plan: StagedWritePlan): string {
   const d = plan.details;
-  if (!d || !isIsoDate(d.effectiveDate)) throw new NativeWriteGuardError(`${plan.flow}: effective date (YYYY-MM-DD) is required.`);
+  if (!d || !isIsoDate(d.effectiveDate))
+    throw new NativeWriteGuardError(`${plan.flow}: effective date (YYYY-MM-DD) is required.`);
   if (d.effectiveDateProvidedBy !== "user") {
     throw new NativeWriteGuardError(`${plan.flow}: effective date must be asked from the user, never defaulted.`);
   }
@@ -199,11 +205,13 @@ function validateFlowInputs(plan: StagedWritePlan): void {
   switch (plan.flow) {
     case "approve_step":
     case "deny_step": {
-      if (!nonEmpty(plan.awaitingApproverWid)) throw new NativeWriteGuardError(`${plan.flow}: awaitingApproverWid is required.`);
+      if (!nonEmpty(plan.awaitingApproverWid))
+        throw new NativeWriteGuardError(`${plan.flow}: awaitingApproverWid is required.`);
       const c = args.comment;
       if (plan.flow === "deny_step") {
         if (!nonEmpty(c)) throw new NativeWriteGuardError("deny_step: comment is required.");
-        if (c.length > DENY_COMMENT_MAX) throw new NativeWriteGuardError(`deny_step: comment must be <= ${DENY_COMMENT_MAX} characters.`);
+        if (c.length > DENY_COMMENT_MAX)
+          throw new NativeWriteGuardError(`deny_step: comment must be <= ${DENY_COMMENT_MAX} characters.`);
       } else if (c !== undefined && typeof c !== "string") {
         throw new NativeWriteGuardError("approve_step: comment must be a string.");
       }
@@ -220,7 +228,8 @@ function validateFlowInputs(plan: StagedWritePlan): void {
       if (args.reviewAboutWorker !== plan.contextInstanceId) {
         throw new NativeWriteGuardError("performance_review: reviewAboutWorker must equal the target worker.");
       }
-      if (!nonEmpty(args.reviewTemplate)) throw new NativeWriteGuardError("performance_review: reviewTemplate is required.");
+      if (!nonEmpty(args.reviewTemplate))
+        throw new NativeWriteGuardError("performance_review: reviewTemplate is required.");
       if (!isIsoDate(args.startDate) || !isIsoDate(args.endDate) || args.endDate < args.startDate) {
         throw new NativeWriteGuardError("performance_review: valid startDate <= endDate (YYYY-MM-DD) required.");
       }
@@ -232,30 +241,48 @@ function validateFlowInputs(plan: StagedWritePlan): void {
     case "payroll_input": {
       const pi = args.payrollInput as Record<string, unknown> | undefined;
       if (!pi || typeof pi !== "object") throw new NativeWriteGuardError("payroll_input: payrollInput is required.");
-      if (pi.worker !== plan.contextInstanceId) throw new NativeWriteGuardError("payroll_input: payrollInput.worker must equal the target worker.");
-      if (!nonEmpty(pi.payComponent)) throw new NativeWriteGuardError("payroll_input: payrollInput.payComponent is required.");
-      if (!isIsoDate(pi.startDate)) throw new NativeWriteGuardError("payroll_input: payrollInput.startDate (YYYY-MM-DD) is required.");
-      if (typeof pi.ongoing !== "boolean") throw new NativeWriteGuardError("payroll_input: payrollInput.ongoing (boolean) is required.");
+      if (pi.worker !== plan.contextInstanceId)
+        throw new NativeWriteGuardError("payroll_input: payrollInput.worker must equal the target worker.");
+      if (!nonEmpty(pi.payComponent))
+        throw new NativeWriteGuardError("payroll_input: payrollInput.payComponent is required.");
+      if (!isIsoDate(pi.startDate))
+        throw new NativeWriteGuardError("payroll_input: payrollInput.startDate (YYYY-MM-DD) is required.");
+      if (typeof pi.ongoing !== "boolean")
+        throw new NativeWriteGuardError("payroll_input: payrollInput.ongoing (boolean) is required.");
       if (pi.ongoing === false && (!isIsoDate(pi.endDate) || pi.endDate < pi.startDate)) {
         throw new NativeWriteGuardError("payroll_input: endDate (>= startDate) is required when ongoing=false.");
       }
       const details = pi.inputDetails;
-      if (!Array.isArray(details) || details.length === 0) throw new NativeWriteGuardError("payroll_input: inputDetails[] is required.");
+      if (!Array.isArray(details) || details.length === 0)
+        throw new NativeWriteGuardError("payroll_input: inputDetails[] is required.");
       for (const d of details as Record<string, unknown>[]) {
-        if (!nonEmpty(d?.type)) throw new NativeWriteGuardError("payroll_input: inputDetails[].type (WID) is required.");
+        if (!nonEmpty(d?.type))
+          throw new NativeWriteGuardError("payroll_input: inputDetails[].type (WID) is required.");
         if (typeof d.value !== "number" || !Number.isFinite(d.value)) {
           throw new NativeWriteGuardError("payroll_input: inputDetails[].value must be a number.");
         }
       }
       const bp = args.businessProcessParameters as Record<string, unknown> | undefined;
-      if (!nonEmpty(bp?.action)) throw new NativeWriteGuardError("payroll_input: businessProcessParameters.action is required.");
+      if (!nonEmpty(bp?.action))
+        throw new NativeWriteGuardError("payroll_input: businessProcessParameters.action is required.");
       if (requireUserEffectiveDate(plan) !== pi.startDate) {
         throw new NativeWriteGuardError("payroll_input: preview effective date must equal payrollInput.startDate.");
       }
       return;
     }
-    default:
+    case "request_time_off":
+    case "cancel_time_off":
+    case "personal_information_change":
+    case "home_contact_change":
+    case "goal_progress":
+    case "anytime_feedback":
+    case "passport_visa_change":
+    case "government_id_change":
       return;
+    default: {
+      const _exhaustive: never = plan.flow;
+      return _exhaustive;
+    }
   }
 }
 
@@ -273,12 +300,16 @@ export function validateStagedWritePlan(plan: StagedWritePlan): void {
   if ((def.open ?? null) !== (plan.open?.tool ?? null)) {
     throw new NativeWriteGuardError(`Flow '${plan.flow}' must open with ${def.open ?? "no open step"}.`);
   }
-  if (plan.submit.tool !== def.submit) throw new NativeWriteGuardError(`Flow '${plan.flow}' must submit with ${def.submit}.`);
+  if (plan.submit.tool !== def.submit)
+    throw new NativeWriteGuardError(`Flow '${plan.flow}' must submit with ${def.submit}.`);
   for (const s of plan.stage) {
     if (def.knownGaps?.includes(s.tool)) {
-      throw new NativeWriteGuardError(`${s.tool} is referenced by the skill but not exposed by the tenant (known gap).`);
+      throw new NativeWriteGuardError(
+        `${s.tool} is referenced by the skill but not exposed by the tenant (known gap).`,
+      );
     }
-    if (!def.stage.includes(s.tool)) throw new NativeWriteGuardError(`${s.tool} is not a stage step of '${plan.flow}'.`);
+    if (!def.stage.includes(s.tool))
+      throw new NativeWriteGuardError(`${s.tool} is not a stage step of '${plan.flow}'.`);
   }
   if (def.externalEvent) {
     if (!nonEmpty(plan.eventWid)) {
@@ -346,7 +377,8 @@ export async function previewNativeWrite(
 
   let approvers: PreviewApprovers;
   if (plan.eventWid) {
-    if (!opts.remainingSteps) throw new NativeWriteGuardError("Event exists: remainingSteps lookup is required to show approvers.");
+    if (!opts.remainingSteps)
+      throw new NativeWriteGuardError("Event exists: remainingSteps lookup is required to show approvers.");
     assertAgentReadyCallAllowed(caller.roles, "find_remaining_steps_for_business_process_event", {
       ...ctx,
       awaitingApproverWid: plan.awaitingApproverWid,
@@ -382,7 +414,7 @@ export async function previewNativeWrite(
 
 /** Adapter that performs one native Workday MCP call as the user (ASU token). */
 export type NativeWriteAdapter = {
-  call(tool: string, args: Record<string, unknown>, ctx: { eventWid?: string }): Promise<unknown>;
+  call(tool: string, args: Record<string, unknown>, ctx: { eventWid?: string | undefined }): Promise<unknown>;
   /** Extract the event WID from the open step's response (shape discovered at runtime). */
   eventWidFrom(openResult: unknown): string | undefined;
 };
@@ -391,9 +423,11 @@ export type NativeWriteResult = {
   replayed: boolean;
   submitted: boolean;
   flow: NativeBpFlow;
-  eventWid?: string;
+  eventWid?: string | undefined;
   /** Set when a step after "open" failed: the open event must be discarded/cancelled in Workday. */
   discardRequired?: boolean;
+  /** True when the submit may have reached Workday and must be reconciled, not retried. */
+  uncertain?: boolean;
   error?: string;
   submitResult?: unknown;
 };
@@ -413,6 +447,9 @@ export async function commitNativeWrite(
   }
   if (!input.idempotencyKey?.trim()) throw new NativeWriteGuardError("idempotencyKey is required.");
   const cached = deps.idempotency.get(caller.userId, NATIVE_WRITE_PREVIEW_KIND, input.idempotencyKey);
+  if (cached?.status === "unknown") {
+    return { ...(cached.body as NativeWriteResult), replayed: true, uncertain: true };
+  }
   if (cached) return { ...(cached.body as NativeWriteResult), replayed: true };
 
   const { data: plan } = deps.previewStore.consumeGeneric<StagedWritePlan>(
@@ -429,7 +466,8 @@ export async function commitNativeWrite(
 
   // Re-check every step before touching Workday (roles may have changed since preview);
   // a denial here throws and is never pinned to the idempotency key.
-  for (const c of [plan.open, ...plan.stage, plan.submit]) if (c) assertAgentReadyCallAllowed(caller.roles, c.tool, ctx);
+  for (const c of [plan.open, ...plan.stage, plan.submit])
+    if (c) assertAgentReadyCallAllowed(caller.roles, c.tool, ctx);
 
   const external = Boolean(NATIVE_WRITE_FLOWS[plan.flow].externalEvent);
   let eventWid: string | undefined = external ? plan.eventWid : undefined;
@@ -448,17 +486,25 @@ export async function commitNativeWrite(
     const submitResult = await run(plan.submit, eventWid);
     result = { replayed: false, submitted: true, flow: plan.flow, eventWid, submitResult };
   } catch (e) {
+    const state = classifyCommitFailure(e);
     result = {
       replayed: false,
       submitted: false,
       flow: plan.flow,
       eventWid,
       discardRequired: touched && Boolean(eventWid),
-      error: e instanceof Error ? e.message : String(e),
+      uncertain: state === "unknown",
+      error: e instanceof Error ? e.name : "error",
     };
+    deps.idempotency.set(caller.userId, NATIVE_WRITE_PREVIEW_KIND, input.idempotencyKey, {
+      status: state,
+      body: result,
+      workdayEventId: eventWid,
+    });
+    return result;
   }
   deps.idempotency.set(caller.userId, NATIVE_WRITE_PREVIEW_KIND, input.idempotencyKey, {
-    status: result.submitted ? "ok" : "error",
+    status: "ok",
     body: result,
     workdayEventId: eventWid,
   });

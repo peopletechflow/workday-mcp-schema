@@ -1,8 +1,4 @@
-import type {
-  TimeOffBalance,
-  TimeOffRequestInput,
-  TimeOffRequestResult,
-} from "./types.js";
+import type { TimeOffBalance, TimeOffRequestInput, TimeOffRequestResult } from "./types.js";
 import type { WorkdayClient } from "./client.js";
 
 /**
@@ -47,10 +43,7 @@ export class FixtureWorkdayClient implements WorkdayClient {
     );
   }
 
-  async submitTimeOffRequest(
-    _accessToken: string,
-    input: TimeOffRequestInput,
-  ): Promise<TimeOffRequestResult> {
+  async submitTimeOffRequest(_accessToken: string, input: TimeOffRequestInput): Promise<TimeOffRequestResult> {
     const result: TimeOffRequestResult = {
       workdayEventId: `evt_fixture_${this.submitted.length + 1}`,
       status: "SUBMITTED",
@@ -66,9 +59,7 @@ export class FixtureWorkdayClient implements WorkdayClient {
 }
 
 /** Seam for injecting recorded JSON fixtures in tests without live HTTP. */
-export function createWorkdayClientFromFixtureData(
-  balances: TimeOffBalance[],
-): WorkdayClient {
+export function createWorkdayClientFromFixtureData(balances: TimeOffBalance[]): WorkdayClient {
   const client = new FixtureWorkdayClient();
   client.getMyTimeOffBalances = async () => balances;
   return client;

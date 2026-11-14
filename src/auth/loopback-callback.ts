@@ -35,7 +35,9 @@ export function createLoopbackCallbackServer(opts: {
   const log = opts.log ?? ((l) => process.stderr.write(`${JSON.stringify({ src: "oauth-callback", ...l })}\n`));
   const server = createServer(async (req, res) => {
     const reply = (status: number, message: string) =>
-      void res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(page(message));
+      void res
+        .writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+        .end(page(message));
     try {
       const u = new URL(req.url ?? "/", redirect.origin);
       if (req.method !== "GET" || u.pathname !== redirect.pathname) return reply(404, "Not found.");
@@ -69,7 +71,9 @@ export function startLoopbackCallback(opts: Parameters<typeof createLoopbackCall
   const u = new URL(opts.config.oauthRedirectUri);
   const server = createLoopbackCallbackServer(opts);
   server.on("error", (e) =>
-    process.stderr.write(`${JSON.stringify({ src: "oauth-callback", evt: "listen_failed", err: (e as NodeJS.ErrnoException).code ?? e.name })}\n`),
+    process.stderr.write(
+      `${JSON.stringify({ src: "oauth-callback", evt: "listen_failed", err: (e as NodeJS.ErrnoException).code ?? e.name })}\n`,
+    ),
   );
   server.listen(Number(u.port), u.hostname.replace(/^\[|\]$/g, ""));
   server.unref();

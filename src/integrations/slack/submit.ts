@@ -25,8 +25,8 @@ export type SubmitOutcome = SubmitResult & { done: boolean };
 export type SubmitDeps = {
   service: ApprovalExecutionService;
   commandName: string;
-  budgetMs?: number;
-  log?: IntakeLog;
+  budgetMs?: number | undefined;
+  log?: IntakeLog | undefined;
 };
 
 export async function submitFromSlack(
@@ -36,15 +36,34 @@ export async function submitFromSlack(
   onLate?: (result: SubmitResult) => Promise<unknown>,
 ): Promise<SubmitOutcome> {
   const log = deps.log ?? defaultLog;
-  const settled: Promise<SubmitResult> = deps.service.commitApproved(caller, requestId, `slack-submit-${requestId}`).then(
-    (result) => ({ ok: true, text: commitResultText(result) }),
-    (e: unknown) => {
-      log({ evt: "commit_failed", code: e instanceof ApprovalError ? e.code : e instanceof RbacDeniedError ? "rbac" : e instanceof Error ? e.name : "error" });
-      return { ok: false, text: slackErrorMessage(e, deps.commandName)?.text ?? "Not done: internal error." };
-    },
-  );
+  const settled: Promise<SubmitResult> = deps.service
+    .commitApproved(caller, requestId, `slack-submit-${requestId}`)
+    .then(
+      (result) => ({ ok: true, text: commitResultText(result) }),
+      (e: unknown) => {
+        log({
+          evt: "commit_failed",
+          code:
+            e instanceof ApprovalError
+              ? e.code
+              : e instanceof RbacDeniedError
+                ? "rbac"
+                : e instanceof Error
+                  ? e.name
+                  : "error",
+        });
+        return { ok: false, text: slackErrorMessage(e, deps.commandName)?.text ?? "Not done: internal error." };
+      },
+    );
   const res = await withinBudget(settled, deps.budgetMs ?? ACK_BUDGET_MS);
   if (res.done) return { done: true, ...res.value };
-  if (onLate) void settled.then((v) => onLate(v)).catch((e: unknown) => log({ evt: "late_report_failed", err: e instanceof Error ? e.name : "error" }));
-  return { done: false, ok: true, text: `Submitting ${requestId} to Workday. The result will appear here; or check \`${deps.commandName} status ${requestId}\`.` };
+  if (onLate)
+    void settled
+      .then((v) => onLate(v))
+      .catch((e: unknown) => log({ evt: "late_report_failed", err: e instanceof Error ? e.name : "error" }));
+  return {
+    done: false,
+    ok: true,
+    text: `Submitting ${requestId} to Workday. The result will appear here; or check \`${deps.commandName} status ${requestId}\`.`,
+  };
 }

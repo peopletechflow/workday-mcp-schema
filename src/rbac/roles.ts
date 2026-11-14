@@ -9,7 +9,8 @@ export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   worker_self: "Own profile, own time-off, own benefits, own pay statements (read); request/cancel own time-off.",
   manager: "Team roster and team time-off reads; approve/deny team time-off.",
   hr_partner: "Broader org reads (supervisory org). No payroll write.",
-  payroll_viewer: "Pay group, pay result and payroll input reads within listed pay groups; own pay statements only. No writes.",
+  payroll_viewer:
+    "Pay group, pay result and payroll input reads within listed pay groups; own pay statements only. No writes.",
   admin:
     "Full READ access to worker data (all scopes) plus kill switch / config. Uses the admin's own sign-in, " +
     "never a shared account. Writes only on the admin's own record, always preview + explicit confirm.",
@@ -21,9 +22,13 @@ export function isRole(value: string): value is Role {
 
 /** Parse a comma-separated role list (e.g. WORKDAY_USER_ROLES). Unknown roles throw (fail closed). */
 export function parseRoles(raw: string | undefined): Role[] {
-  const parts = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const parts = (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const unknown = parts.filter((p) => !isRole(p));
-  if (unknown.length) throw new Error(`Unknown role(s) in WORKDAY_USER_ROLES: ${unknown.join(", ")}. Valid: ${ROLES.join(", ")}`);
+  if (unknown.length)
+    throw new Error(`Unknown role(s) in WORKDAY_USER_ROLES: ${unknown.join(", ")}. Valid: ${ROLES.join(", ")}`);
   return [...new Set(parts as Role[])];
 }
 

@@ -20,7 +20,15 @@ import { TokenStore } from "../src/auth/token-store.js";
 import { AuditLogger, redactPii } from "../src/safety/audit.js";
 import { redactFields } from "../src/observability/log.js";
 import { HttpWorkdayClient, WorkdayApiError } from "../src/workday/client.js";
-import { createPkcePair, PKCE_TTL_MS, rememberPkce, SignInRequiredError, takePkce, type OAuthTokens, type PkcePair } from "../src/auth/oauth.js";
+import {
+  createPkcePair,
+  PKCE_TTL_MS,
+  rememberPkce,
+  SignInRequiredError,
+  takePkce,
+  type OAuthTokens,
+  type PkcePair,
+} from "../src/auth/oauth.js";
 import { requireUserAccessToken } from "../src/session.js";
 import { createLoopbackCallbackServer, isLoopbackRedirect } from "../src/auth/loopback-callback.js";
 
@@ -34,7 +42,7 @@ async function check(name: string, fn: () => Promise<void> | void): Promise<void
     console.log(`ok   ${name}`);
   } catch (e) {
     failed++;
-    console.error(`FAIL ${name}\n     ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+    console.error(`FAIL ${name}\n     ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
   }
 }
 
@@ -64,40 +72,64 @@ async function connect(config: AppConfig, env: NodeJS.ProcessEnv) {
   const client = new Client({ name: "check-mcp", version: "0" });
   await Promise.all([built.server.connect(a), client.connect(b)]);
   const call = async (name: string, args: Record<string, unknown>) => {
-    const r = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: Array<{ text: string }> };
+    const r = (await client.callTool({ name, arguments: args })) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
     return { isError: r.isError === true, text: r.content.map((c) => c.text).join("\n") };
   };
   return { ...built, client, call };
 }
 
-const liveToken = (): OAuthTokens => ({ accessToken: "at", refreshToken: "rt", expiresAt: Date.now() + 3_600_000, tokenType: "Bearer" });
-const timeOff = { startDate: "2026-12-01", endDate: "2026-12-01", unit: "DAYS", quantity: 1, timeOffType: { type: "Time_Off_Type_ID", value: "PTO" } };
+const liveToken = (): OAuthTokens => ({
+  accessToken: "at",
+  refreshToken: "rt",
+  expiresAt: Date.now() + 3_600_000,
+  tokenType: "Bearer",
+});
+const timeOff = {
+  startDate: "2026-12-01",
+  endDate: "2026-12-01",
+  unit: "DAYS",
+  quantity: 1,
+  timeOffType: { type: "Time_Off_Type_ID", value: "PTO" },
+};
 const previewTokenOf = (text: string): string => (JSON.parse(text) as { previewToken: string }).previewToken;
 
 await check("deny wins on the original time-off tools (balance, preview, commit)", async () => {
-  const env = baseEnv({ WORKDAY_USER_DENIES: "tool:get_my_time_off_balance,tool:preview_request_time_off,tool:commit_request_time_off" });
+  const env = baseEnv({
+    WORKDAY_USER_DENIES: "tool:get_my_time_off_balance,tool:preview_request_time_off,tool:commit_request_time_off",
+  });
   const { call } = await connect(makeConfig(), env);
-  for (const [tool, args] of [
-    ["get_my_time_off_balance", {}],
-    ["preview_request_time_off", timeOff],
-    ["commit_request_time_off", { previewToken: "x".repeat(20), idempotencyKey: "key-12345", userConfirmed: true }],
-  ] as const) {
-    const r = await call(tool, args);
-    assert.ok(r.isError, `${tool} should be denied`);
-    assert.match(r.text, /explicitly denied/, tool);
+  for (const args of [
+    { action: "balances" },
+    { action: "request_preview", ...timeOff },
+    { action: "request_commit", previewToken: "x".repeat(20), idempotencyKey: "key-12345", userConfirmed: true },
+  ]) {
+    const r = await call("time_off", args);
+    assert.ok(r.isError, `${String(args.action)} should be denied`);
+    assert.match(r.text, /explicitly denied/, String(args.action));
   }
 });
 
 await check("roles still allow the original tools when no deny is set", async () => {
   const { call } = await connect(makeConfig(), baseEnv());
-  const r = await call("get_my_time_off_balance", {});
+  const r = await call("time_off", { action: "balances" });
   assert.ok(!r.isError, r.text);
 });
 
 await check("production guard: data-center-prefixed Workday hosts are refused without WORKDAY_ALLOW_PROD", () => {
-  for (const host of ["https://wd2-services1.workday.com", "https://wd5-services1.myworkday.com", "https://services1.workday.com", "https://wd3.myworkday.com"]) {
+  for (const host of [
+    "https://wd2-services1.workday.com",
+    "https://wd5-services1.myworkday.com",
+    "https://services1.workday.com",
+    "https://wd3.myworkday.com",
+  ]) {
     assert.throws(() => loadConfig({ WORKDAY_BASE_URL: host, WORKDAY_TENANT: "acme" }), /production/, host);
-    assert.doesNotThrow(() => loadConfig({ WORKDAY_BASE_URL: host, WORKDAY_TENANT: "acme", WORKDAY_ALLOW_PROD: "true" }), host);
+    assert.doesNotThrow(
+      () => loadConfig({ WORKDAY_BASE_URL: host, WORKDAY_TENANT: "acme", WORKDAY_ALLOW_PROD: "true" }),
+      host,
+    );
   }
   for (const host of ["https://wd2-impl-services1.workday.com", "https://wd5-preview-services1.myworkday.com"]) {
     assert.doesNotThrow(() => loadConfig({ WORKDAY_BASE_URL: host, WORKDAY_TENANT: "acme" }), host);
@@ -108,39 +140,48 @@ await check("live mode requires a real token-store key; fixtures may use the dev
   const live = makeConfig({ live: true });
   assert.throws(() => tokenStoreSecret(live, {}), /WORKDAY_TOKEN_ENCRYPTION_KEY/);
   assert.throws(() => tokenStoreSecret(live, { WORKDAY_TOKEN_ENCRYPTION_KEY: "short" }), /at least 32/);
-  assert.throws(() => tokenStoreSecret(live, { WORKDAY_TOKEN_ENCRYPTION_KEY: "local-dev-only-change-me" }), /WORKDAY_TOKEN_ENCRYPTION_KEY/);
+  assert.throws(
+    () => tokenStoreSecret(live, { WORKDAY_TOKEN_ENCRYPTION_KEY: "local-dev-only-change-me" }),
+    /WORKDAY_TOKEN_ENCRYPTION_KEY/,
+  );
   assert.equal(tokenStoreSecret(live, { WORKDAY_TOKEN_ENCRYPTION_KEY: LIVE_KEY }), LIVE_KEY);
   assert.ok(tokenStoreSecret(makeConfig(), {}).length > 0);
 });
 
-await check("commit_request_time_off: SIGN_IN_REQUIRED keeps the preview and does not pin the idempotency key", async () => {
-  const { call, deps } = await connect(makeConfig({ live: true }), baseEnv());
-  await deps.tokenStore.set(USER, liveToken());
-  const pv = await call("preview_request_time_off", timeOff);
-  assert.ok(!pv.isError, pv.text);
-  const previewToken = previewTokenOf(pv.text);
-  await deps.tokenStore.delete(USER); // session lost between preview and commit
-  const args = { previewToken, idempotencyKey: "commit-key-1", userConfirmed: true };
-  const first = await call("commit_request_time_off", args);
-  assert.ok(first.isError && /sign-in required/i.test(first.text), first.text);
-  await deps.tokenStore.set(USER, liveToken());
-  const second = await call("commit_request_time_off", args);
-  assert.ok(!second.isError, second.text);
-  assert.equal((JSON.parse(second.text) as { submitted: boolean }).submitted, true);
-});
+await check(
+  "time_off request_commit: SIGN_IN_REQUIRED keeps the preview and does not pin the idempotency key",
+  async () => {
+    const { call, deps } = await connect(makeConfig({ live: true }), baseEnv());
+    await deps.tokenStore.set(USER, liveToken());
+    const pv = await call("time_off", { action: "request_preview", ...timeOff });
+    assert.ok(!pv.isError, pv.text);
+    const previewToken = previewTokenOf(pv.text);
+    await deps.tokenStore.delete(USER); // session lost between preview and commit
+    const args = { action: "request_commit", previewToken, idempotencyKey: "commit-key-1", userConfirmed: true };
+    const first = await call("time_off", args);
+    assert.ok(first.isError && /sign-in required/i.test(first.text), first.text);
+    await deps.tokenStore.set(USER, liveToken());
+    const second = await call("time_off", args);
+    assert.ok(!second.isError, second.text);
+    assert.equal((JSON.parse(second.text) as { submitted: boolean }).submitted, true);
+  },
+);
 
 await check("framework commit (cancel): SIGN_IN_REQUIRED keeps the preview token", async () => {
   const { call, deps } = await connect(makeConfig({ live: true }), baseEnv());
   await deps.tokenStore.set(USER, liveToken());
-  const pv = await call("preview_cancel_time_off", { requestId: { type: "Time_Off_Entry_ID", value: "TOE_MY_1" } });
+  const pv = await call("time_off", {
+    action: "cancel_preview",
+    requestId: { type: "Time_Off_Entry_ID", value: "TOE_MY_1" },
+  });
   assert.ok(!pv.isError, pv.text);
   const previewToken = previewTokenOf(pv.text);
   await deps.tokenStore.delete(USER);
-  const args = { previewToken, idempotencyKey: "cancel-key-1", userConfirmed: true };
-  const first = await call("commit_cancel_time_off", args);
+  const args = { action: "cancel_commit", previewToken, idempotencyKey: "cancel-key-1", userConfirmed: true };
+  const first = await call("time_off", args);
   assert.ok(first.isError && /SIGN_IN_REQUIRED/.test(first.text), first.text);
   await deps.tokenStore.set(USER, liveToken());
-  const second = await call("commit_cancel_time_off", args);
+  const second = await call("time_off", args);
   assert.ok(!second.isError, second.text);
 });
 
@@ -211,21 +252,28 @@ await check("Workday fault text drops emails and bearer tokens before the model 
     new Response(JSON.stringify({ message: "Contact ada@example.com. Bearer super-secret-token" }), {
       status: 400,
     })) as typeof fetch;
-  const client = new HttpWorkdayClient(config, { apiVersion: "v1", validatedOperations: ["balances.list"], timeoutMs: 5000 }, fetchImpl);
-  await assert.rejects(() => client.getMyTimeOffBalances("at"), (err: unknown) => {
-    assert.ok(err instanceof WorkdayApiError);
-    assert.equal(err.message.includes("ada@example.com"), false);
-    assert.equal(err.message.includes("super-secret-token"), false);
-    assert.match(err.message, /\[REDACTED_EMAIL\]/);
-    assert.match(err.message, /Bearer \[REDACTED\]/);
-    return true;
-  });
+  const client = new HttpWorkdayClient(
+    config,
+    { apiVersion: "v1", validatedOperations: ["balances.list"], timeoutMs: 5000 },
+    fetchImpl,
+  );
+  await assert.rejects(
+    () => client.getMyTimeOffBalances("at"),
+    (err: unknown) => {
+      assert.ok(err instanceof WorkdayApiError);
+      assert.equal(err.message.includes("ada@example.com"), false);
+      assert.equal(err.message.includes("super-secret-token"), false);
+      assert.match(err.message, /\[REDACTED_EMAIL\]/);
+      assert.match(err.message, /Bearer \[REDACTED\]/);
+      return true;
+    },
+  );
 });
 
 await check("audit log redacts free-text comment and is owner-only", async () => {
   const config = makeConfig();
   const { call } = await connect(config, baseEnv());
-  const r = await call("preview_request_time_off", { ...timeOff, comment: "flu, doctor's note attached" });
+  const r = await call("time_off", { action: "request_preview", ...timeOff, comment: "flu, doctor's note attached" });
   assert.ok(!r.isError, r.text);
   const log = readFileSync(config.auditLogPath, "utf8");
   assert.ok(!log.includes("flu"), "comment leaked into audit log");
@@ -236,20 +284,22 @@ await check("audit log redacts free-text comment and is owner-only", async () =>
   }
 });
 
-await check("tool annotations: cancel/deny destructive, previews open-world and not idempotent, catalog closed-world", async () => {
-  const { client } = await connect(makeConfig(), baseEnv());
-  const tools = new Map((await client.listTools()).tools.map((t) => [t.name, t.annotations ?? {}]));
-  assert.equal(tools.get("commit_cancel_time_off")?.destructiveHint, true);
-  assert.equal(tools.get("commit_deny_time_off")?.destructiveHint, true);
-  assert.equal(tools.get("commit_request_time_off")?.destructiveHint, false);
-  assert.equal(tools.get("commit_approve_time_off")?.destructiveHint, false);
-  for (const p of ["preview_request_time_off", "preview_cancel_time_off"]) {
-    assert.equal(tools.get(p)?.openWorldHint, true, p);
-    assert.equal(tools.get(p)?.idempotentHint, false, p);
-  }
-  assert.equal(tools.get("list_agent_ready_tools")?.openWorldHint, false);
-  assert.equal(tools.get("get_my_time_off_balance")?.readOnlyHint, true);
-});
+await check(
+  "tool annotations: time_off can write and is destructive, catalog is closed-world, pay is read-only",
+  async () => {
+    const { client } = await connect(makeConfig(), baseEnv());
+    const tools = new Map((await client.listTools()).tools.map((t) => [t.name, t.annotations ?? {}]));
+    assert.equal(tools.get("time_off")?.readOnlyHint, false);
+    assert.equal(tools.get("time_off")?.destructiveHint, true);
+    assert.equal(tools.get("time_off")?.idempotentHint, false);
+    assert.equal(tools.get("time_off")?.openWorldHint, true);
+    assert.equal(tools.get("catalog")?.openWorldHint, false);
+    assert.equal(tools.get("worker")?.readOnlyHint, true);
+    assert.equal(tools.get("pay")?.readOnlyHint, true);
+    assert.equal(tools.has("get_my_time_off_balance"), false);
+    assert.ok(tools.size >= 8 && tools.size <= 15, `tool count ${tools.size}`);
+  },
+);
 
 await check("pending sign-ins expire, are capped, and are single use", () => {
   const pending = new Map<string, PkcePair>();
@@ -276,9 +326,18 @@ await check("loopback OAuth callback: valid state stores tokens once; replayed o
   let verifierSeen = "";
   const fetchImpl = (async (_url: string, init: { body: URLSearchParams }) => {
     verifierSeen = init.body.get("code_verifier") ?? "";
-    return new Response(JSON.stringify({ access_token: "linked-at", refresh_token: "linked-rt", expires_in: 3600 }), { status: 200 });
+    return new Response(JSON.stringify({ access_token: "linked-at", refresh_token: "linked-rt", expires_in: 3600 }), {
+      status: 200,
+    });
   }) as unknown as typeof fetch;
-  const server = createLoopbackCallbackServer({ config, tokenStore, pendingPkce: pending, resolveUserId: () => USER, fetchImpl, log: () => {} });
+  const server = createLoopbackCallbackServer({
+    config,
+    tokenStore,
+    pendingPkce: pending,
+    resolveUserId: () => USER,
+    fetchImpl,
+    log: () => {},
+  });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {
     const port = (server.address() as AddressInfo).port;
@@ -299,11 +358,18 @@ await check("token file binds ciphertext to the user id", async () => {
   const store = new TokenStore(config.tokenStorePath, LIVE_KEY);
   await store.set("alice", { ...liveToken(), accessToken: "alice-token" });
   await store.set("bob", { ...liveToken(), accessToken: "bob-token" });
-  const rows = JSON.parse(readFileSync(config.tokenStorePath, "utf8")) as Array<{ userId: string; ciphertext: string; iv: string; tag: string }>;
+  const rows = JSON.parse(readFileSync(config.tokenStorePath, "utf8")) as Array<{
+    userId: string;
+    ciphertext: string;
+    iv: string;
+    tag: string;
+  }>;
   const alice = rows.find((r) => r.userId === "alice");
   const bob = rows.find((r) => r.userId === "bob");
   assert.ok(alice && bob);
-  const swapped = rows.map((r) => (r.userId === "bob" ? { ...r, ciphertext: alice.ciphertext, iv: alice.iv, tag: alice.tag } : r));
+  const swapped = rows.map((r) =>
+    r.userId === "bob" ? { ...r, ciphertext: alice.ciphertext, iv: alice.iv, tag: alice.tag } : r,
+  );
   writeFileSync(config.tokenStorePath, JSON.stringify(swapped));
   await assert.rejects(() => store.get("bob"));
   assert.equal((await store.get("alice"))?.accessToken, "alice-token");
@@ -338,10 +404,14 @@ await check("refresh: refused grant deletes token and asks for sign-in; outage k
   try {
     globalThis.fetch = (async () => new Response("{}", { status: 503 })) as typeof fetch;
     await store.set(USER, expired);
-    await assert.rejects(requireUserAccessToken(config, store, USER, new Map()), (e) => !(e instanceof SignInRequiredError));
+    await assert.rejects(
+      requireUserAccessToken(config, store, USER, new Map()),
+      (e) => !(e instanceof SignInRequiredError),
+    );
     assert.ok(await store.get(USER), "token deleted on a 503");
 
-    globalThis.fetch = (async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
     await assert.rejects(requireUserAccessToken(config, store, USER, new Map()), SignInRequiredError);
     assert.equal(await store.get(USER), undefined, "dead token kept after invalid_grant");
   } finally {

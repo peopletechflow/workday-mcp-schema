@@ -23,7 +23,7 @@ export const WorkerSummarySchema = z.object({
 });
 export type WorkerSummary = z.infer<typeof WorkerSummarySchema>;
 
-/** Team member row for manager views — even smaller than the profile. */
+/** Team member row for manager views, even smaller than the profile. */
 export const TeamMemberSchema = WorkerSummarySchema.pick({
   workerId: true,
   preferredName: true, // PII: name

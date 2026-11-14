@@ -29,17 +29,35 @@ Two runtimes:
 
 Model calls go through `src/ai/`. They stay off when `AI_GATEWAY_API_KEY` is unset.
 
-Reads check permission, call Workday with the caller's token, and append an audit line. Writes store the exact payload, wait for a human, then commit through code with an idempotency key. The integration agent can propose a change. It cannot approve or commit.
+Reads check permission, call Workday with the caller's token, and append an audit line. Writes store the exact payload, wait for a human, then commit through code with an idempotency key. A timeout, HTTP 5xx, or network error is stored as unknown and is not submitted again until it is reconciled. The integration agent can propose a change. It cannot approve or commit.
+
+## Tools
+
+The server exposes 13 outcome-shaped tools, one per goal, instead of one tool per Workday operation. `time_off` covers balances, history, request, cancel, and manager approve or deny. Each write is an action (`request_preview`, then `request_commit`) with the same preview token, confirmation, idempotency key, and RBAC as before. `worker`, `organization`, `benefits`, and `pay` run the reads this server implements. `job`, `compensation`, `talent`, `recruiting`, `personal_data`, `expenses`, and `business_process` look up catalog operations for that goal and do not call Workday. `catalog` searches the whole catalog. The 158 tenant and seed operations stay in `src/agent-ready/` and are routed internally. They are not deleted.
+
+Set `WORKDAY_EXPOSE_FULL_CATALOG=true` to also register one discovery tool per catalog operation. That flag is off by default. Those extra tools return catalog metadata only. They do not call Workday, and payroll writes stay unavailable.
+
+Token counts use `gpt-tokenizer` (cl100k_base) on the JSON `tools/list` payload:
+
+| Surface                                  | Tools | Tokens |
+| ---------------------------------------- | ----- | ------ |
+| Previous hand-written MCP tools          | 18    | 17,287 |
+| Outcome tools (default)                  | 13    | 3,999  |
+| Outcome tools plus the full catalog flag | 171   | 33,035 |
+
+The cut follows the same idea as Amplitude's MCP cleanup: loading a large tool list spends the context window before the model does any work. Descriptions stay short. Each tool takes an `action` enum, and the handler still checks the stricter per-action schema.
+
+Permission ids for the old operation names still apply. `tool:get_my_time_off_balance` denies the `balances` action. `WORKDAY_DISABLED_TOOLS` accepts either the outcome name or the operation name.
 
 ## How to run
 
-**Prerequisites:** Node.js 22 and pnpm 10. A live tenant needs a Workday sandbox or implementation tenant and an OAuth API client.
+**Prerequisites:** Node.js 22 or newer (`engines` is `>=22`; CI and the Docker image use Node.js 22) and pnpm 10. A live tenant needs a Workday sandbox or implementation tenant and an OAuth API client.
 
 **Configure:** copy `.env.example` to `.env`. Develop against a sandbox or implementation tenant only.
 
 ```bash
 pnpm install
-pnpm check         # typecheck, rbac, mcp, integrations, migrations, and a PGlite durable run
+pnpm check         # typecheck, lint, format, audit, rbac, mcp, safety, integrations, migrations, and a PGlite durable run
 pnpm build
 pnpm dev           # stdio MCP server (or: pnpm start after build)
 ```
@@ -80,15 +98,15 @@ Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 
 ## Layout
 
-| Task | Start at |
-| --- | --- |
-| Tool contract or schema | `src/schemas/tools/*.ts`, then `src/tools/registry.ts` |
-| RBAC or a permission id | `src/rbac/permissions.ts`, [docs/RBAC.md](docs/RBAC.md) |
-| Slack command, form, button | `src/integrations/slack/*.ts` |
+| Task                         | Start at                                                            |
+| ---------------------------- | ------------------------------------------------------------------- |
+| Tool contract or schema      | `src/schemas/tools/*.ts`, then `src/tools/registry.ts`              |
+| RBAC or a permission id      | `src/rbac/permissions.ts`, [docs/RBAC.md](docs/RBAC.md)             |
+| Slack command, form, button  | `src/integrations/slack/*.ts`                                       |
 | Approval lifecycle or ledger | `src/integrations/approvals/execution.ts`, `src/store/approvals.ts` |
-| OAuth, tokens, linking | `src/auth/*.ts`, `src/integrations/link.ts`, `src/store/repos.ts` |
-| Agent prompt or toolset | `src/ai/integration-agent.ts`, `src/ai/enterprise-agent.ts` |
-| Checks | `scripts/check-*.ts` |
+| OAuth, tokens, linking       | `src/auth/*.ts`, `src/integrations/link.ts`, `src/store/repos.ts`   |
+| Agent prompt or toolset      | `src/ai/integration-agent.ts`, `src/ai/enterprise-agent.ts`         |
+| Checks                       | `scripts/check-*.ts`                                                |
 
 ## License
 

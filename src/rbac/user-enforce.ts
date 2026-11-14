@@ -22,7 +22,7 @@ export type UserEnforceInput = {
   userId: string;
   roles: readonly Role[];
   toolName: string;
-  assignments?: AssignmentStore;
+  assignments?: AssignmentStore | undefined;
 };
 
 function assignmentFor(input: UserEnforceInput) {
@@ -110,12 +110,6 @@ export function assertAgentReadyCallAllowedForUser(
       );
     }
     // Grant without role does not invent team/org/pay-group membership.
-    throw new RbacDeniedError(
-      toolName,
-      [],
-      roles,
-      "role",
-      permissionId,
-    );
+    throw new RbacDeniedError(toolName, [], roles, "role", permissionId);
   }
 }

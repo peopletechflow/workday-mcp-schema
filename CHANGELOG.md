@@ -2,10 +2,19 @@
 
 ## Unreleased
 
+### Changed (outcome tools and code quality)
+
+- MCP `tools/list` is 13 outcome tools (3,999 cl100k tokens) instead of 18 hand-written tools (17,287 tokens). `WORKDAY_EXPOSE_FULL_CATALOG=true` adds the 158 catalog operations as discovery-only tools (33,035 tokens) and is off by default. Permission ids such as `tool:get_my_time_off_balance` still deny the matching action.
+- Commit idempotency records timeouts, HTTP 5xx, and network errors as unknown and does not resubmit them. Definitive success and definitive 4xx stay pinned. The classifier is shared with the approval ledger.
+- Live absence JSON is parsed with Zod and rejected when a required field is missing. Time off goes through the tool framework (`outputSchema` and `structuredContent`).
+- Zod 4. Per-user, per-tool rate limits (60 reads and 10 writes per minute by default) and a pluggable tool metrics sink. File token writes take an in-process lock. The idempotency store has a TTL and a size cap, and it does not evict unknown rows. Branded id schemas. ESLint (`typescript-eslint` strict type-checked), Prettier, `pnpm audit --audit-level=high`, and a CodeQL workflow. Node.js engines are `>=22`. CI and the Docker image use Node.js 22.
+
 ### Changed (tenant wording)
+
 - Docs credit the 2026-10-20 Workday Developer Agent discovery of the Agent-Ready catalog (152 of 158 tools, the tenant-discovered rows in `src/agent-ready/catalog.tenant.ts`) and the Extend skills on developer tenant `bzyvydgxsb_extdev` (wd119). They state that the runtime defaults to fixture mode, that `WORKDAY_VALIDATED_OPERATIONS` is empty by default, that `HttpWorkdayClient` has no recorded live run, and that this server has not been validated live and is not certified for production.
 
 ### Changed (showcase review)
+
 - Stdio token files bind AES-GCM additional data to `token:<userId>`. A `tokens.json` from before this binding does not decrypt. Sign in again.
 - Audit redaction and the stderr logger share one key predicate (normalized PII names, token and secret substrings, national-id, bank, and passport patterns). Nested log objects are walked. Email addresses and bearer tokens are scrubbed in string values and in audit `errorMessage`. Workday fault messages are scrubbed the same way before they are returned.
 - The enterprise agent wraps tool results as untrusted data, states that rule in `DEFAULT_INSTRUCTIONS`, and omits `commit_*` tools unless `allowWriteCommits` is true.
@@ -16,9 +25,11 @@
 - README rewritten around what the server is, how it runs, the security model, and the limits.
 
 ### Added (local env loading)
+
 - `src/env/local-env.ts`: the HTTP runtime and admin CLI load `.env.local` from the working directory (override `LOCAL_ENV_FILE`) with `node:util` `parseEnv`, no new dependency. Process environment always wins; skipped when `NODE_ENV=production` or `SKIP_LOCAL_ENV=true`; a missing file is fine. Required-key validation (database URL, token encryption key) is unchanged. `check:durable` covers precedence, production skip, opt-out, missing file, and missing keys.
 
 ### Added (database migrations, roles, dev seed)
+
 - Versioned migration workflow (docs/DATABASE.md): ledger `schema_migrations` gains a sha256 `checksum`; drift (changed SQL for an applied version), gaps and a database newer than the code are refused; ledgers from before checksums are upgraded in place. Each migration runs in its own transaction under the advisory lock. No automatic down migrations (rollback = backup restore or a new forward version).
 - Migration 2 `expiry_indexes` (form_sessions / oauth_states expiry, reconcile index).
 - `pnpm db:status` (read-only, per version applied / pending / drift / unverified, exit 2 unless up to date), `pnpm db:migrate` (uses `DATABASE_MIGRATION_URL` when set), `pnpm db:seed:dev`, `pnpm db:export`.
@@ -31,16 +42,19 @@
 - Fixed a flaky durable check: identical Slack bodies signed within the same second were (correctly) rejected by the replay guard.
 
 ### Fixed (PR #1 review)
+
 - Slack form submissions no longer wait for approver DMs before the ack. Notifications run after the ack in a bounded background runner (`src/integrations/background.ts`: 20 s per task, at most 200 in flight, failures logged) that the server drains on shutdown before closing the pool. If creating the approval itself outruns the 2.5 s budget, the ack updates the modal to "Submitting" and the outcome (receipt with request id, or the error text) is DMed to the requester afterwards.
 - The form nonce is now consumed in the same transaction that creates the approval (`propose({ claim })`). A failure rolls the claim back so the form stays usable, and a second submit of the same form cannot create a second approval (it gets "This form was already submitted").
 - `commitApproved` checks requester, tenant and permission with a read-only `lookupCommit` before any token work. A finished commit is returned from the ledger without refreshing or re-linking the Workday token; a non-requester is refused without a token fetch; a revoked role or another tenant cannot read a stored result (`beginCommit` now also checks permission before a replay). New executions fetch the token with no approval row lock held, then `beginCommit` re-checks and claims as before.
 
 ### Changed (pnpm, agent context)
+
 - Package manager is pnpm: `packageManager` pinned in package.json (corepack), `pnpm-lock.yaml` committed, `package-lock.json` removed, Dockerfile installs with `corepack enable` and `pnpm install --frozen-lockfile`, docs and code comments use `pnpm run ...` and `pnpm admin ...`. `AGENTS.md` says never to add `package-lock.json`.
 - Agent context follows Anthropic's "Effective context engineering for AI agents" (docs/CONTEXT-ENGINEERING.md): both system prompts are sectioned (`<background>`, `<security_rules>` or `<rules>`, `<tool_guidance>`, `<output>`, `<examples>`) with three canonical examples instead of a rule list; tool descriptions and input schemas come from the schema-first contracts through `contractFor(name)` instead of internal `buildReason` text and untyped records; `wrapUntrusted` caps results at `MAX_TOOL_RESULT_CHARS` and tells the model to narrow the query; agent runs are bounded with `stepCountIs` (`MAX_AGENT_STEPS` 8, `MAX_ENTERPRISE_AGENT_STEPS` 10).
 - `AGENTS.md` rewritten as a short up-front map (invariants, check command, "where to look" table) that points at files for just-in-time reading.
 
 ### Changed (Slack UI and ack performance)
+
 - Approval lifecycle runs inside Slack: a form submission DMs each assigned approver (Approve / Reject buttons, requester mention, decision deadline) and sends the requester a receipt; a decision replaces the approver's message and DMs the requester, with a "Submit to Workday" button when approved; Submit commits through `ApprovalExecutionService.commitApproved` with the requester's token and the ledger. `SLACK_APPROVAL_DELIVERY=explicit` gates the DMs; `SLACK_APPROVAL_CHANNEL_ID` is now a fallback only. `src/integrations/slack/notify.ts` (`SlackApprovalNotifier`), `interactions.ts`, new `submit.ts`.
 - Slow commits no longer sit inside the Slack ack: the ack says "Submitting" after the 2.5 s budget and the result replaces it through the interaction's `response_url` (command and button). `response_url` is accepted only on `https://hooks.slack.com/`.
 - No Workday token endpoint call inside a Slack ack: `ApprovalExecutionService` takes `linked` (stored link exists) for propose; the refresh happens at commit.
@@ -50,6 +64,7 @@
 - Checks: `check:integrations` 38 (delivery targets, response_url handling, Submit button), `check:durable` adds Slack UI lifecycle, slow-commit follow-up, foreign response_url, and no-refresh-in-ack.
 
 ### Changed (hardening pass)
+
 - Per-user denies apply to the original time-off tools (`assertToolAllowedForUser`); MCP tool hints come from the registry (cancel/deny destructive, previews not idempotent).
 - Live mode requires `WORKDAY_TOKEN_ENCRYPTION_KEY` (32+ chars, no fallback); token file written atomically, owner-only. Production requires `LINK_ACCEPT_UNVERIFIED_SIGNER=true` (see RUNBOOK "Account linking identity"). Audit log redacts comment-like fields. Production host detection by pattern.
 - Token refresh distinguishes a refused grant (token deleted, re-link) from an outage or timeout (token kept, "temporarily unavailable"); 15 s token endpoint timeout; 30 s idle-in-transaction timeout.
@@ -58,6 +73,7 @@
 - Stdio server split into `src/mcp-server.ts` with a loopback OAuth callback (`src/auth/loopback-callback.ts`) for live mode; `check:mcp` drives the real tools over an in-memory transport. Pending sign-ins expire and are capped. `pruneExpired` covers replay keys, form sessions, and OAuth states.
 
 ### Added (production runtime)
+
 - `src/server/main.ts` HTTP runtime (`npm run serve`) with config validation, `/healthz`, `/readyz`, OAuth callback, request/header timeouts, graceful shutdown, Dockerfile.
 - Postgres storage (`src/store`): migrations, replay guard, form sessions, identity links, role entitlements, approval policies, approvals, commit ledger, encrypted tokens and PKCE states, admin audit.
 - Account linking via `/workday link` (admin invite, PKCE, single-use state). Audited admin CLI (`npm run admin`).
@@ -66,11 +82,13 @@
 - `check:durable` (17 checks, PGlite or real Postgres), `npm run check`. Docs: RUNBOOK, SANDBOX-TESTING, AGENTS.md.
 
 ### Changed
+
 - `loadConfig(env)` now reads booleans from the passed env (previously read process.env).
 - Slack handlers are async with pluggable replay, session, and identity stores. Unlinked `/workday` callers get a link hint.
 - In-memory single-process Slack server and its guard removed in favor of the durable runtime.
 
 ### Added (second pass)
+
 - Signed `/workday` slash command and `wd_time_off_shortcut` global shortcut open the Block Kit modal via `views.open` (injectable Slack API, 2.5 s ack budget). `submit` and `status` subcommands.
 - `ApprovalExecutionService`: approvals bind the exact Workday payload and a preview-token fingerprint; commit runs a fixed executor through the shared time-off core with the requester's token.
 - `src/tools/time-off-core.ts`: preview/commit logic shared with the existing MCP tools (refactor, same behavior).
@@ -80,6 +98,7 @@
 - `check:integrations` now 41 checks including router end-to-end flows.
 
 ### Added
+
 - Slack Events intake with v0 signature verification, replay protection, size caps, workspace and channel allowlists, bot/self ignore, server-side identity binding, redacted logs. No automatic replies.
 - Slack Block Kit time-off modal with opaque single-use nonce, owner and expiry binding, Zod validation.
 - Slack approve/reject interactions bound to verified identities; explicit-only approval delivery.
@@ -89,4 +108,5 @@
 - `npm run check:integrations` (31 offline checks), `docs/INTEGRATIONS.md`, example policy files.
 
 ## 9245750
+
 - Enterprise user permission assignments (deny, grant, role) and AI SDK agent.

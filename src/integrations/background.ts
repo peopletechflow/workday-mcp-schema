@@ -30,11 +30,18 @@ export class BackgroundTasks {
     const timeout = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), timeoutMs);
     });
-    const task: Promise<void> = Promise.race([Promise.resolve().then(fn).then(() => "done" as const), timeout])
+    const task: Promise<void> = Promise.race([
+      Promise.resolve()
+        .then(fn)
+        .then(() => "done" as const),
+      timeout,
+    ])
       .then((r) => {
         if (r === "timeout") this.o.log?.({ evt: "background_timeout", task: label, ...fields });
       })
-      .catch((e: unknown) => this.o.log?.({ evt: "background_failed", task: label, err: e instanceof Error ? e.name : "error", ...fields }))
+      .catch((e: unknown) =>
+        this.o.log?.({ evt: "background_failed", task: label, err: e instanceof Error ? e.name : "error", ...fields }),
+      )
       .finally(() => {
         if (timer) clearTimeout(timer);
         this.inFlight.delete(task);

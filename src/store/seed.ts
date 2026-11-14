@@ -68,4 +68,10 @@ export async function seedDev(db: Db): Promise<void> {
   });
 }
 
-export const SEED_TABLES = ["role_assignments", "identity_links", "approval_policies", "approval_requests", "admin_audit"] as const;
+export const SEED_TABLES = [
+  "role_assignments",
+  "identity_links",
+  "approval_policies",
+  "approval_requests",
+  "admin_audit",
+] as const;

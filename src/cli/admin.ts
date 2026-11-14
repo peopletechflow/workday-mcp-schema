@@ -14,6 +14,7 @@
  * Actor: --actor or ADMIN_ACTOR (required for writes). Tenant: WORKDAY_TENANT.
  */
 import { randomBytes } from "node:crypto";
+import { AbsenceTypeIdSchema } from "../schemas/common.js";
 import { createPgDb } from "../store/db.js";
 import { migrate, migrationStatus, schemaVersion, LATEST_SCHEMA_VERSION } from "../store/migrations.js";
 import { seedDev, SEED_TABLES } from "../store/seed.js";
@@ -34,14 +35,24 @@ function flags(argv: string[]): Record<string, string | true> {
   }
   return out;
 }
-const list = (v: string | true | undefined) => (typeof v === "string" ? v.split(",").map((s) => s.trim()).filter(Boolean) : []);
+const list = (v: string | true | undefined) =>
+  typeof v === "string"
+    ? v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
 function req(f: Record<string, string | true>, k: string): string {
   const v = f[k];
   if (typeof v !== "string" || !v) throw new Error(`--${k} is required`);
   return v;
 }
 
-export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.env, print: (s: string) => void = (s) => process.stdout.write(s + "\n")): Promise<void> {
+export async function runAdmin(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  print: (s: string) => void = (s) => process.stdout.write(s + "\n"),
+): Promise<void> {
   const [cmd, ...rest] = argv;
   const f = flags(rest);
   if (cmd === "keygen") {
@@ -51,7 +62,8 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
   }
   const schemaAdmin = cmd === "migrate" || cmd === "seed-dev";
   const url = (schemaAdmin && env.DATABASE_MIGRATION_URL) || env.DATABASE_URL;
-  if (!url) throw new Error(schemaAdmin ? "DATABASE_MIGRATION_URL or DATABASE_URL is required" : "DATABASE_URL is required");
+  if (!url)
+    throw new Error(schemaAdmin ? "DATABASE_MIGRATION_URL or DATABASE_URL is required" : "DATABASE_URL is required");
   const db = createPgDb(url, { max: 2 });
   try {
     if (cmd === "migrate") return print(`applied: [${(await migrate(db)).join(",")}]`);
@@ -59,13 +71,17 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
       const st = await migrationStatus(db);
       if (f.json) return print(JSON.stringify(st));
       print(`schema ${st.current} / latest ${st.latest}: ${st.state}${st.problem ? ` (${st.problem})` : ""}`);
-      for (const m of st.migrations) print(`  ${String(m.version).padStart(4, "0")} ${m.name.padEnd(20)} ${m.status}${m.appliedAt ? ` ${m.appliedAt}` : ""}`);
+      for (const m of st.migrations)
+        print(
+          `  ${String(m.version).padStart(4, "0")} ${m.name.padEnd(20)} ${m.status}${m.appliedAt ? ` ${m.appliedAt}` : ""}`,
+        );
       if (st.state !== "up_to_date") process.exitCode = 2;
       return;
     }
     if (cmd === "seed-dev") {
       await seedDev(db);
-      for (const t of SEED_TABLES) print(`${t}: ${(await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${t}`)).rows[0]!.n}`);
+      for (const t of SEED_TABLES)
+        print(`${t}: ${(await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${t}`)).rows[0]!.n}`);
       return;
     }
     if (cmd === "schema-status") return print(`schema ${await schemaVersion(db)} / latest ${LATEST_SCHEMA_VERSION}`);
@@ -79,19 +95,42 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
     };
     switch (cmd) {
       case "link-invite":
-        await rt.links.invite(needActor(), { slackTeamId: req(f, "slack-team"), slackUserId: req(f, "slack-user"), tenantId, userId: req(f, "user-id") });
+        await rt.links.invite(needActor(), {
+          slackTeamId: req(f, "slack-team"),
+          slackUserId: req(f, "slack-user"),
+          tenantId,
+          userId: req(f, "user-id"),
+        });
         return print("invited; the user runs the link command in Slack to complete Workday sign-in");
       case "link-revoke":
-        return print((await rt.links.revoke(needActor(), req(f, "slack-team"), req(f, "slack-user"))) ? "revoked (tokens deleted)" : "no active link");
+        return print(
+          (await rt.links.revoke(needActor(), req(f, "slack-team"), req(f, "slack-user")))
+            ? "revoked (tokens deleted)"
+            : "no active link",
+        );
       case "roles-set":
-        await rt.entitlements.set(needActor(), { tenantId, userId: req(f, "user-id") }, { roles: list(f.roles), grants: list(f.grants), denies: list(f.denies) });
+        await rt.entitlements.set(
+          needActor(),
+          { tenantId, userId: req(f, "user-id") },
+          { roles: list(f.roles), grants: list(f.grants), denies: list(f.denies) },
+        );
         return print("roles updated");
       case "policy-set":
-        await rt.backend.setPolicy(needActor(), { tenantId, commitTool: typeof f.tool === "string" ? f.tool : "commit_request_time_off", approverUserIds: list(f.approvers), allowSelfApproval: f["allow-self"] === true, rotate: f.rotate === true });
+        await rt.backend.setPolicy(needActor(), {
+          tenantId,
+          commitTool: typeof f.tool === "string" ? f.tool : "commit_request_time_off",
+          approverUserIds: list(f.approvers),
+          allowSelfApproval: f["allow-self"] === true,
+          rotate: f.rotate === true,
+        });
         return print("policy updated");
       case "approvals-list": {
-        const rows = f.status === "reconcile" ? await rt.backend.needingReconcile(tenantId) : await rt.backend.list(tenantId, typeof f.status === "string" ? f.status : undefined);
-        for (const r of rows) print(`${r.id}\t${r.status}\t${r.requesterUserId}\t${new Date(r.createdAt).toISOString()}\t${r.summary}`);
+        const rows =
+          f.status === "reconcile"
+            ? await rt.backend.needingReconcile(tenantId)
+            : await rt.backend.list(tenantId, typeof f.status === "string" ? f.status : undefined);
+        for (const r of rows)
+          print(`${r.id}\t${r.status}\t${r.requesterUserId}\t${new Date(r.createdAt).toISOString()}\t${r.summary}`);
         return;
       }
       case "reconcile":
@@ -99,10 +138,23 @@ export async function runAdmin(argv: string[], env: NodeJS.ProcessEnv = process.
       case "probe-time-off": {
         const type = parseTypeMap(env.WORKDAY_TIME_OFF_TYPE_MAP)[req(f, "type")];
         if (!type) throw new Error("--type not in WORKDAY_TIME_OFF_TYPE_MAP");
-        const from = req(f, "from"), to = req(f, "to");
+        const from = req(f, "from"),
+          to = req(f, "to");
         const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
-        const token = await (await import("../auth/user-tokens.js")).durableAccessTokens(db, rt.tokens, cfg.app)(req(f, "user-id"));
-        const found = await rt.client.findMatchingTimeOffRequest(token, { startDate: from, endDate: to, unit: "DAYS", quantity: typeof f.quantity === "string" ? Number(f.quantity) : days, timeOffType: type });
+        const token = await (
+          await import("../auth/user-tokens.js")
+        ).durableAccessTokens(
+          db,
+          rt.tokens,
+          cfg.app,
+        )(req(f, "user-id"));
+        const found = await rt.client.findMatchingTimeOffRequest(token, {
+          startDate: from,
+          endDate: to,
+          unit: "DAYS",
+          quantity: typeof f.quantity === "string" ? Number(f.quantity) : days,
+          timeOffType: AbsenceTypeIdSchema.parse(type),
+        });
         return print(found ? `match: event ${found.workdayEventId}` : "no matching entries");
       }
       default:

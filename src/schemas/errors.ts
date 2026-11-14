@@ -21,6 +21,7 @@ export const McpErrorCodeSchema = z.enum([
   "RATE_LIMITED",
   "WORKDAY_FAULT",
   "NOT_IMPLEMENTED",
+  "COMMIT_UNCERTAIN",
   "INTERNAL",
 ]);
 export type McpErrorCode = z.infer<typeof McpErrorCodeSchema>;
@@ -29,7 +30,7 @@ export type McpErrorCode = z.infer<typeof McpErrorCodeSchema>;
 export const McpToolErrorSchema = z.object({
   error: McpErrorCodeSchema,
   message: z.string(),
-  authorizeUrl: z.string().url().optional(),
+  authorizeUrl: z.url().optional(),
   fault: WorkdayFaultSchema.optional(),
 });
 export type McpToolError = z.infer<typeof McpToolErrorSchema>;

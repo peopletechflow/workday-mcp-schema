@@ -19,7 +19,13 @@ import { withinBudget } from "./api.js";
 
 export const TIME_OFF_CALLBACK_ID = "wd_time_off_request";
 
-export type FormSession = { slackTeamId: string; slackUserId: string; identity: BoundIdentity; kind: string; expiresAt: number };
+export type FormSession = {
+  slackTeamId: string;
+  slackUserId: string;
+  identity: BoundIdentity;
+  kind: string;
+  expiresAt: number;
+};
 
 export interface FormSessions {
   open(s: Omit<FormSession, "expiresAt">, ttlMs: number): string | Promise<string>;
@@ -66,16 +72,45 @@ export function buildTimeOffModal(nonce: string): Record<string, unknown> {
     submit: { type: "plain_text", text: "Send for approval" },
     close: { type: "plain_text", text: "Cancel" },
     blocks: [
-      { type: "input", block_id: "start", label: { type: "plain_text", text: "Start date" }, element: { type: "datepicker", action_id: "v" } },
-      { type: "input", block_id: "end", label: { type: "plain_text", text: "End date" }, element: { type: "datepicker", action_id: "v" } },
+      {
+        type: "input",
+        block_id: "start",
+        label: { type: "plain_text", text: "Start date" },
+        element: { type: "datepicker", action_id: "v" },
+      },
+      {
+        type: "input",
+        block_id: "end",
+        label: { type: "plain_text", text: "End date" },
+        element: { type: "datepicker", action_id: "v" },
+      },
       {
         type: "input",
         block_id: "type",
         label: { type: "plain_text", text: "Type" },
-        element: { type: "static_select", action_id: "v", options: TIME_OFF_TYPES.map((t) => ({ text: { type: "plain_text", text: t }, value: t })) },
+        element: {
+          type: "static_select",
+          action_id: "v",
+          options: TIME_OFF_TYPES.map((t) => ({ text: { type: "plain_text", text: t }, value: t })),
+        },
       },
-      { type: "input", block_id: "days", label: { type: "plain_text", text: "Days" }, hint: { type: "plain_text", text: "Count every calendar day in the range, weekends included (or half of that for half days)." }, element: { type: "number_input", action_id: "v", is_decimal_allowed: true, min_value: "0.5", max_value: "30" } },
-      { type: "input", block_id: "comment", optional: true, label: { type: "plain_text", text: "Comment" }, element: { type: "plain_text_input", action_id: "v", max_length: 300 } },
+      {
+        type: "input",
+        block_id: "days",
+        label: { type: "plain_text", text: "Days" },
+        hint: {
+          type: "plain_text",
+          text: "Count every calendar day in the range, weekends included (or half of that for half days).",
+        },
+        element: { type: "number_input", action_id: "v", is_decimal_allowed: true, min_value: "0.5", max_value: "30" },
+      },
+      {
+        type: "input",
+        block_id: "comment",
+        optional: true,
+        label: { type: "plain_text", text: "Comment" },
+        element: { type: "plain_text_input", action_id: "v", max_length: 300 },
+      },
     ],
   };
 }
@@ -98,7 +133,7 @@ const Payload = z.object({
   view: z.object({
     callback_id: z.string(),
     private_metadata: z.string().max(64),
-    state: z.object({ values: z.record(z.record(z.record(z.unknown()))) }),
+    state: z.object({ values: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) }),
   }),
 });
 
@@ -128,20 +163,23 @@ export type FormDeps = {
   sessions: FormSessions;
   service: ApprovalExecutionService;
   /** Slash command name, used in "run /workday link" hints. */
-  commandName?: string;
-  nowSec?: number;
+  commandName?: string | undefined;
+  nowSec?: number | undefined;
   /**
    * Ack deadline for creating the approval. When set together with `defer`, a slower database
    * makes the handler ack with a "submitting" view and finish in the background; `onLate`
    * receives the outcome (approval or error text) so it is never lost.
    */
-  budgetMs?: number;
-  defer?: (label: string, task: () => Promise<unknown>, fields?: Record<string, unknown>) => boolean;
-  onLate?: (outcome: { approval: ApprovalRequest } | { errorText: string }, slackUser: SlackAddress) => Promise<unknown>;
-  log?: (fields: Record<string, unknown>) => void;
+  budgetMs?: number | undefined;
+  defer?: ((label: string, task: () => Promise<unknown>, fields?: Record<string, unknown>) => boolean) | undefined;
+  onLate?:
+    | ((outcome: { approval: ApprovalRequest } | { errorText: string }, slackUser: SlackAddress) => Promise<unknown>)
+    | undefined;
+  log?: ((fields: Record<string, unknown>) => void) | undefined;
 };
 
-export const FORM_USED_TEXT = "This form was already submitted. Check your Slack DMs or run the status command for the request id.";
+export const FORM_USED_TEXT =
+  "This form was already submitted. Check your Slack DMs or run the status command for the request id.";
 
 /** View shown when the request is still being created after the ack deadline. */
 export function buildSubmittingView(): Record<string, unknown> {
@@ -149,17 +187,35 @@ export function buildSubmittingView(): Record<string, unknown> {
     type: "modal",
     title: { type: "plain_text", text: "Time off request" },
     close: { type: "plain_text", text: "Close" },
-    blocks: [{ type: "section", text: { type: "mrkdwn", text: "Submitting your request. You will get a Slack message with the result and request id." } }],
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "Submitting your request. You will get a Slack message with the result and request id.",
+        },
+      },
+    ],
   };
 }
 
 /** Slack sends interactivity as application/x-www-form-urlencoded with a `payload` field. */
-export async function handleViewSubmission(rawBody: string, headers: Record<string, string | undefined>, deps: FormDeps): Promise<FormOutcome> {
+export async function handleViewSubmission(
+  rawBody: string,
+  headers: Record<string, string | undefined>,
+  deps: FormDeps,
+): Promise<FormOutcome> {
   const deny = (status: 400 | 401 | 403, reason: string): FormOutcome => ({ status, body: "", reason });
   if (!deps.config.enabled) return deny(403, "slack_disabled");
   if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return deny(400, "body_too_large");
   try {
-    await verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({
+      rawBody,
+      headers,
+      signingSecret: deps.config.signingSecret,
+      replay: deps.replay,
+      nowSec: deps.nowSec,
+    });
   } catch (e) {
     return deny(401, e instanceof SlackVerificationError ? e.reason : "verify_failed");
   }
@@ -190,8 +246,15 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
   });
   if (!parsed.success) {
     const errors: Record<string, string> = {};
-    const map: Record<string, string> = { startDate: "start", endDate: "end", timeOffType: "type", quantity: "days", comment: "comment" };
-    for (const issue of parsed.error.issues) errors[map[String(issue.path[0])] ?? "start"] = issue.message.slice(0, 150);
+    const map: Record<string, string> = {
+      startDate: "start",
+      endDate: "end",
+      timeOffType: "type",
+      quantity: "days",
+      comment: "comment",
+    };
+    for (const issue of parsed.error.issues)
+      errors[map[String(issue.path[0])] ?? "start"] = issue.message.slice(0, 150);
     return { status: 200, body: { response_action: "errors", errors } };
   }
   const f = parsed.data;
@@ -200,10 +263,16 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
   const nonce = p.view.private_metadata;
   const fieldError = (e: unknown): FormOutcome | undefined => {
     if (e instanceof ApprovalError && e.code === "FORM_USED") {
-      return { status: 200, body: { response_action: "errors", errors: { start: FORM_USED_TEXT.slice(0, 150) } }, reason: "form_already_used" };
+      return {
+        status: 200,
+        body: { response_action: "errors", errors: { start: FORM_USED_TEXT.slice(0, 150) } },
+        reason: "form_already_used",
+      };
     }
     const m = slackErrorMessage(e, commandName);
-    return m ? { status: 200, body: { response_action: "errors", errors: { [m.field]: m.text.slice(0, 150) } } } : undefined;
+    return m
+      ? { status: 200, body: { response_action: "errors", errors: { [m.field]: m.text.slice(0, 150) } } }
+      : undefined;
   };
   // Checks (permissions, link, day count) run before the claim; the form nonce is consumed in
   // the same transaction that creates the approval. Any failure leaves the form usable, and a
@@ -211,7 +280,10 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
   type Done = { ok: true; approval: ApprovalRequest } | { ok: false; error: unknown };
   const work: Promise<Done> = deps.service
     .proposeTimeOff(identity, f, "slack_form", { claim: async (q) => Boolean(await deps.sessions.consume(nonce, q)) })
-    .then((approval) => ({ ok: true as const, approval }), (error: unknown) => ({ ok: false as const, error }));
+    .then(
+      (approval) => ({ ok: true as const, approval }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
   const settle = (d: Done): FormOutcome => {
     if (d.ok) return { status: 200, body: { response_action: "clear" }, approval: d.approval, slackUser };
     const out = fieldError(d.error);
@@ -227,8 +299,14 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
     const d = await work;
     if (d.ok) return deps.onLate?.({ approval: d.approval }, slackUser);
     const m = fieldError(d.error);
-    deps.log?.({ evt: "form_late_error", code: d.error instanceof ApprovalError ? d.error.code : d.error instanceof Error ? d.error.name : "error" });
-    const text = m && m.status === 200 && m.body !== "" ? Object.values((m.body as { errors: Record<string, string> }).errors)[0]! : "Your time-off request could not be created. Try again.";
+    deps.log?.({
+      evt: "form_late_error",
+      code: d.error instanceof ApprovalError ? d.error.code : d.error instanceof Error ? d.error.name : "error",
+    });
+    const text =
+      m && m.status === 200 && m.body !== ""
+        ? Object.values((m.body as { errors: Record<string, string> }).errors)[0]!
+        : "Your time-off request could not be created. Try again.";
     return deps.onLate?.({ errorText: text }, slackUser);
   };
   if (!deps.defer("form_late_outcome", late)) {
@@ -242,11 +320,18 @@ export async function handleViewSubmission(rawBody: string, headers: Record<stri
  * Start a form for a verified Slack caller (for example from a signed slash command or
  * shortcut). Returns the view to pass to Slack views.open with the interaction trigger_id.
  */
-export async function startTimeOffForm(deps: { config: SlackConfig; identities: IdentityResolver; sessions: FormSessions }, slackTeamId: string, slackUserId: string): Promise<Record<string, unknown>> {
+export async function startTimeOffForm(
+  deps: { config: SlackConfig; identities: IdentityResolver; sessions: FormSessions },
+  slackTeamId: string,
+  slackUserId: string,
+): Promise<Record<string, unknown>> {
   if (!deps.config.enabled) throw new Error("Slack disabled");
   if (!deps.config.allowedTeamIds.includes(slackTeamId)) throw new Error("team_not_allowed");
   const identity = await deps.identities.resolveSlack(slackTeamId, slackUserId);
   if (!identity) throw new Error("unlinked_user");
-  const nonce = await deps.sessions.open({ slackTeamId, slackUserId, identity, kind: TIME_OFF_CALLBACK_ID }, deps.config.formTtlMs);
+  const nonce = await deps.sessions.open(
+    { slackTeamId, slackUserId, identity, kind: TIME_OFF_CALLBACK_ID },
+    deps.config.formTtlMs,
+  );
   return buildTimeOffModal(nonce);
 }

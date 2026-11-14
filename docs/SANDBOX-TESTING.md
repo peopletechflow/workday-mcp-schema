@@ -16,11 +16,11 @@ CHECK_DATABASE_URL=postgresql://... pnpm run check:durable   # same suite on a r
 
 Every live Workday operation is gated by `WORKDAY_VALIDATED_OPERATIONS` and fails closed (no network call) until you list it:
 
-| Operation | Path (verified in Workday REST Directory) | Not verified |
-| --- | --- | --- |
-| `timeOffDetails.list` | `GET /ccx/api/absenceManagement/{version}/{tenant}/workers/me/timeOffDetails` | `fromDate` / `toDate` filter names, response field names |
+| Operation               | Path (verified in Workday REST Directory)                                                                  | Not verified                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `timeOffDetails.list`   | `GET /ccx/api/absenceManagement/{version}/{tenant}/workers/me/timeOffDetails`                              | `fromDate` / `toDate` filter names, response field names                        |
 | `requestTimeOff.create` | `POST .../workers/me/requestTimeOff` ("creates a time off request ... and initiates the business process") | body shape `days[].date, dailyQuantity, timeOffType.id, comment`, response `id` |
-| `balances.list` | `GET .../balances` | worker query parameter name |
+| `balances.list`         | `GET .../balances`                                                                                         | worker query parameter name                                                     |
 
 Source: Workday REST Directory, absenceManagement (https://community.workday.com/sites/default/files/file-hosting/restapi/). Body and filter names in this repo come from non-official specs and must be confirmed against your tenant's REST directory for the version you pin in `WORKDAY_ABSENCE_API_VERSION`. Account linking does not verify which Workday worker signed in (no validated "who am I" call); all calls use the `me` entry, so a token only ever acts as its signer.
 

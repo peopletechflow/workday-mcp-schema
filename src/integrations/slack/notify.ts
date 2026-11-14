@@ -39,18 +39,28 @@ const button = (text: string, action_id: string, value: string, style?: "primary
 export const slackDate = (ms: number) => `<!date^${Math.floor(ms / 1000)}^{date_short_pretty} {time}|soon>`;
 
 /** Message for an approver. Button value carries only the request id and change hash. */
-export function buildApprovalBlocks(r: Readonly<ApprovalRequest>, opts: { requesterSlackUserId?: string } = {}): Record<string, unknown>[] {
+export function buildApprovalBlocks(
+  r: Readonly<ApprovalRequest>,
+  opts: { requesterSlackUserId?: string | undefined } = {},
+): Record<string, unknown>[] {
   const value = `${r.id}|${r.changeHash}`;
   const who = opts.requesterSlackUserId ? ` from <@${opts.requesterSlackUserId}>` : "";
   return [
     section(`*Approval needed*${who}\n${escapeMrkdwn(r.summary)}`),
     context(`Request \`${r.id}\`, change \`${r.changeHash.slice(0, 16)}\`. Decide by ${slackDate(r.expiresAt)}.`),
-    { type: "actions", block_id: `apr:${r.id}`, elements: [button("Approve", APPROVE_ACTION, value, "primary"), button("Reject", REJECT_ACTION, value, "danger")] },
+    {
+      type: "actions",
+      block_id: `apr:${r.id}`,
+      elements: [button("Approve", APPROVE_ACTION, value, "primary"), button("Reject", REJECT_ACTION, value, "danger")],
+    },
   ];
 }
 
 /** Replacement for the approver's message once a decision exists (no buttons). */
-export function buildDecisionBlocks(r: Readonly<ApprovalRequest>, deciderSlackUserId?: string): Record<string, unknown>[] {
+export function buildDecisionBlocks(
+  r: Readonly<ApprovalRequest>,
+  deciderSlackUserId?: string,
+): Record<string, unknown>[] {
   const verb = r.status === "approved" ? "Approved" : r.status === "rejected" ? "Rejected" : r.status;
   const by = deciderSlackUserId ? ` by <@${deciderSlackUserId}>` : "";
   const at = r.decidedAt ? ` at ${slackDate(r.decidedAt)}` : "";
@@ -62,15 +72,25 @@ export function buildRequesterBlocks(r: Readonly<ApprovalRequest>, commandName: 
   const summary = escapeMrkdwn(r.summary);
   switch (r.status) {
     case "pending":
-      return [section(`*Sent for approval*\n${summary}`), context(`Request \`${r.id}\`. Your approvers were notified. Check with \`${commandName} status ${r.id}\`.`)];
+      return [
+        section(`*Sent for approval*\n${summary}`),
+        context(`Request \`${r.id}\`. Your approvers were notified. Check with \`${commandName} status ${r.id}\`.`),
+      ];
     case "approved":
       return [
         section(`*Approved*\n${summary}\nSubmit it to Workday by ${slackDate(r.expiresAt)}.`),
-        { type: "actions", block_id: `sub:${r.id}`, elements: [button("Submit to Workday", SUBMIT_ACTION, r.id, "primary")] },
+        {
+          type: "actions",
+          block_id: `sub:${r.id}`,
+          elements: [button("Submit to Workday", SUBMIT_ACTION, r.id, "primary")],
+        },
         context(`Or run \`${commandName} submit ${r.id}\`.`),
       ];
     case "rejected":
-      return [section(`*Rejected*\n${summary}`), context(`Request \`${r.id}\`. Start a new request if you still need the time off.`)];
+      return [
+        section(`*Rejected*\n${summary}`),
+        context(`Request \`${r.id}\`. Start a new request if you still need the time off.`),
+      ];
     default:
       return [section(`*${r.status}*\n${summary}`), context(`Request \`${r.id}\`.`)];
   }
@@ -89,11 +109,11 @@ export class SlackApprovalNotifier {
   constructor(
     private readonly d: {
       config: SlackConfig;
-      api?: SlackApi;
+      api?: SlackApi | undefined;
       /** Reverse lookup (tenant user -> Slack user) for DMs. Without it only the fallback channel is used. */
-      directory?: SlackDirectory;
+      directory?: SlackDirectory | undefined;
       commandName: string;
-      log?: LogFn;
+      log?: LogFn | undefined;
     },
   ) {}
 
@@ -141,27 +161,48 @@ export class SlackApprovalNotifier {
   /** New pending request: DM assigned approvers (fallback: approval channel), DM the requester a receipt. */
   async proposed(r: Readonly<ApprovalRequest>, requester?: SlackAddress): Promise<Delivery> {
     if (!this.deliveryEnabled) return { delivered: false, recipients: 0, reason: "delivery_not_enabled" };
-    if (!this.d.directory && !this.d.config.approvalChannelId) return { delivered: false, recipients: 0, reason: "delivery_not_configured" };
+    if (!this.d.directory && !this.d.config.approvalChannelId)
+      return { delivered: false, recipients: 0, reason: "delivery_not_configured" };
     const requesterAddr = requester ?? (await this.lookup({ tenantId: r.tenantId, userId: r.requesterUserId }));
     const approverIds = r.assignedApprovers.filter((u) => u !== r.requesterUserId);
-    const approvers = (await Promise.all(approverIds.map((u) => this.lookup({ tenantId: r.tenantId, userId: u })))).filter((a): a is SlackAddress => Boolean(a));
+    const approvers = (
+      await Promise.all(approverIds.map((u) => this.lookup({ tenantId: r.tenantId, userId: u })))
+    ).filter((a): a is SlackAddress => Boolean(a));
     const text = `Approval needed: ${r.summary}`;
     const blocks = buildApprovalBlocks(r, { requesterSlackUserId: requesterAddr?.userId });
     let recipients = 0;
     for (const a of approvers) if (await this.post(a.userId, text, blocks)) recipients++;
-    if (recipients === 0 && this.d.config.approvalChannelId && (await this.post(this.d.config.approvalChannelId, text, blocks))) recipients++;
-    if (requesterAddr) await this.post(requesterAddr.userId, `Sent for approval: ${r.summary}`, buildRequesterBlocks(r, this.d.commandName));
+    if (
+      recipients === 0 &&
+      this.d.config.approvalChannelId &&
+      (await this.post(this.d.config.approvalChannelId, text, blocks))
+    )
+      recipients++;
+    if (requesterAddr)
+      await this.post(
+        requesterAddr.userId,
+        `Sent for approval: ${r.summary}`,
+        buildRequesterBlocks(r, this.d.commandName),
+      );
     this.log({ evt: "proposed", req: r.id, recipients });
     return recipients ? { delivered: true, recipients } : { delivered: false, recipients: 0, reason: "no_recipients" };
   }
 
   /** Decision made: replace the button message, then tell the requester (Submit button when approved). */
-  async decided(r: Readonly<ApprovalRequest>, o: { responseUrl?: string; deciderSlackUserId?: string }): Promise<void> {
+  async decided(
+    r: Readonly<ApprovalRequest>,
+    o: { responseUrl?: string | undefined; deciderSlackUserId?: string | undefined },
+  ): Promise<void> {
     const verb = r.status === "approved" ? "Approved" : r.status === "rejected" ? "Rejected" : r.status;
-    await this.respond(o.responseUrl, { replace_original: true, text: `${verb}: ${r.summary}`, blocks: buildDecisionBlocks(r, o.deciderSlackUserId) });
+    await this.respond(o.responseUrl, {
+      replace_original: true,
+      text: `${verb}: ${r.summary}`,
+      blocks: buildDecisionBlocks(r, o.deciderSlackUserId),
+    });
     if (!this.deliveryEnabled) return;
     const requester = await this.lookup({ tenantId: r.tenantId, userId: r.requesterUserId });
-    if (requester) await this.post(requester.userId, `${verb}: ${r.summary}`, buildRequesterBlocks(r, this.d.commandName));
+    if (requester)
+      await this.post(requester.userId, `${verb}: ${r.summary}`, buildRequesterBlocks(r, this.d.commandName));
     this.log({ evt: "decided", req: r.id, status: r.status, requesterNotified: Boolean(requester) });
   }
 
@@ -173,7 +214,12 @@ export class SlackApprovalNotifier {
 
   /** Replace the message a button lived on (or a slash-command ack) with a final result. */
   async replace(responseUrl: string | undefined, text: string, blocks?: Record<string, unknown>[]): Promise<boolean> {
-    return this.respond(responseUrl, { replace_original: true, response_type: "ephemeral", text, ...(blocks ? { blocks } : {}) });
+    return this.respond(responseUrl, {
+      replace_original: true,
+      response_type: "ephemeral",
+      text,
+      ...(blocks ? { blocks } : {}),
+    });
   }
 
   /** Ephemeral note to whoever clicked; the original message (and its buttons) stays. */

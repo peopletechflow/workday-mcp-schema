@@ -40,7 +40,10 @@ export type PayResultsSummary = {
   /** Why lines were withheld (shown to the user so they know detail exists). */
   linesWithheld: string | null;
 };
-export type PayResultsDetail = Omit<PayResultsSummary, "mode" | "linesWithheld"> & { mode: "detail"; lines: PayResultLine[] };
+export type PayResultsDetail = Omit<PayResultsSummary, "mode" | "linesWithheld"> & {
+  mode: "detail";
+  lines: PayResultLine[];
+};
 export type ShapedPayResults = PayResultsSummary | PayResultsDetail;
 
 export type PayResultsInput = {
@@ -60,7 +63,11 @@ export function mayReturnPayResultLines(roles: readonly Role[], request: PayResu
 }
 
 /** Pure shaping. Summary carries counts and statuses only. */
-export function shapePayResults(roles: readonly Role[], request: PayResultsRequest, input: PayResultsInput): ShapedPayResults {
+export function shapePayResults(
+  roles: readonly Role[],
+  request: PayResultsRequest,
+  input: PayResultsInput,
+): ShapedPayResults {
   const counts = new Map<string, number>();
   for (const l of input.lines) {
     const s = typeof l.status === "string" && l.status.trim() ? l.status.trim() : UNKNOWN_STATUS;
@@ -72,9 +79,12 @@ export function shapePayResults(roles: readonly Role[], request: PayResultsReque
     periodStart: input.periodStart ?? null,
     periodEnd: input.periodEnd ?? null,
     resultCount: input.lines.length,
-    statuses: [...counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([status, count]) => ({ status, count })),
+    statuses: [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([status, count]) => ({ status, count })),
   };
-  if (mayReturnPayResultLines(roles, request)) return { ...base, mode: "detail", lines: input.lines.map((l) => ({ ...l })) };
+  if (mayReturnPayResultLines(roles, request))
+    return { ...base, mode: "detail", lines: input.lines.map((l) => ({ ...l })) };
   return {
     ...base,
     mode: "summary",

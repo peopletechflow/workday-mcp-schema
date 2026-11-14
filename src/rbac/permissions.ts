@@ -34,6 +34,22 @@ export const TOOL_PERMISSIONS: Readonly<Record<string, readonly Role[]>> = {
   // Layer-1 catalog meta tools (discovery only; not native Workday passthroughs)
   [T.listAgentReadyTools.name]: ["worker_self", "manager", "hr_partner", "admin"],
   [T.getAgentReadyTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+
+  // Outcome tools. Action checks use the operation names above. These rows let the
+  // registry see the exposed names. A deny of an operation name still blocks that action.
+  [T.timeOffTool.name]: ["worker_self", "manager", "hr_partner"],
+  [T.workerTool.name]: SELF_READ,
+  [T.organizationTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.jobTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.compensationTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.benefitsTool.name]: SELF_READ,
+  [T.payTool.name]: ["worker_self", "payroll_viewer", "admin"],
+  [T.talentTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.recruitingTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.personalDataTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.expensesTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.businessProcessTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
+  [T.catalogTool.name]: ["worker_self", "manager", "hr_partner", "admin"],
 };
 
 export function rolesForTool(toolName: string): readonly Role[] | undefined {

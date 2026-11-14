@@ -18,7 +18,8 @@
 export type SensitiveFieldCategory = "national_id" | "bank_account" | "passport";
 
 export const SENSITIVE_FIELD_PATTERNS: Readonly<Record<SensitiveFieldCategory, RegExp>> = {
-  national_id: /national.?id|national.?identifier|government.?id|ssn|social.?security|tax.?id|\btin\b|\bsin\b|\bbsn\b|\bnino\b/i,
+  national_id:
+    /national.?id|national.?identifier|government.?id|ssn|social.?security|tax.?id|\btin\b|\bsin\b|\bbsn\b|\bnino\b/i,
   bank_account: /bank|iban|account.?number|routing|swift|\bbic\b|sort.?code|payment.?election/i,
   // visa numbers are hidden with passports (same identity-document class)
   passport: /passport|visa/i,
@@ -50,7 +51,12 @@ export function categoryOfKey(key: string): SensitiveFieldCategory | null {
   return null;
 }
 
-function walk(value: unknown, show: SensitiveFieldCategory | null, found: Set<SensitiveFieldCategory>, depth: number): unknown {
+function walk(
+  value: unknown,
+  show: SensitiveFieldCategory | null,
+  found: Set<SensitiveFieldCategory>,
+  depth: number,
+): unknown {
   if (depth > 12) return HIDDEN; // fail closed on very deep payloads
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((v) => walk(v, show, found, depth + 1));
@@ -71,11 +77,17 @@ function walk(value: unknown, show: SensitiveFieldCategory | null, found: Set<Se
  * Gate a response. `subjectWorkerIds` = the distinct workers whose data the response holds
  * (resolved by caller code from the request/response).
  */
-export function gateSensitiveFields<T>(data: T, subjectWorkerIds: readonly string[], request: SensitiveFieldRequest = {}): GatedResponse<T> {
+export function gateSensitiveFields<T>(
+  data: T,
+  subjectWorkerIds: readonly string[],
+  request: SensitiveFieldRequest = {},
+): GatedResponse<T> {
   const subjects = [...new Set(subjectWorkerIds.map((s) => s.trim()).filter(Boolean))];
   const named = request.namedWorkerId?.trim();
   const show: SensitiveFieldCategory | null =
-    request.explicitField && named && named !== "me" && subjects.length === 1 && subjects[0] === named ? request.explicitField : null;
+    request.explicitField && named && named !== "me" && subjects.length === 1 && subjects[0] === named
+      ? request.explicitField
+      : null;
   const found = new Set<SensitiveFieldCategory>();
   const gated = walk(data, show, found, 0) as T;
   const shown = show !== null && found.has(show);
@@ -83,6 +95,6 @@ export function gateSensitiveFields<T>(data: T, subjectWorkerIds: readonly strin
     data: gated,
     notice: shown ? LOGGED_ACCESS_NOTICE : null,
     hiddenCategories: [...found].filter((c) => c !== show || !shown).sort(),
-    accessLog: shown ? { category: show!, workerId: named! } : null,
+    accessLog: shown && show && named ? { category: show, workerId: named } : null,
   };
 }

@@ -13,11 +13,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AgentReadyKind,
-  AgentReadyOperationType,
-  AgentReadyToolDefinition,
-} from "../src/agent-ready/types.js";
+import type { AgentReadyKind, AgentReadyOperationType, AgentReadyToolDefinition } from "../src/agent-ready/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, "../src/agent-ready/catalog.generated.ts");
@@ -28,9 +24,14 @@ function parseArgs(argv: string[]): Args {
   const out: Args = { dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--csv") out.csv = argv[++i];
-    else if (a === "--asor") out.asor = argv[++i];
-    else if (a === "--dry-run") out.dryRun = true;
+    if (!a) continue;
+    if (a === "--csv" || a === "--asor") {
+      const value = argv[i + 1];
+      if (!value) throw new Error(`${a} needs a path`);
+      if (a === "--csv") out.csv = value;
+      else out.asor = value;
+      i += 1;
+    } else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--help" || a === "-h") {
       console.log(`Usage: sync-agent-ready-catalog.ts --csv <path> [--asor <path>] [--dry-run]
        sync-agent-ready-catalog.ts --asor <path> [--dry-run]`);
@@ -42,13 +43,20 @@ function parseArgs(argv: string[]): Args {
 }
 
 function normHeader(h: string): string {
-  return h.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return h
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
 }
 
 function parseCsv(text: string): Record<string, string>[] {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim().length);
-  if (lines.length < 2) return [];
-  const headers = splitCsvLine(lines[0]).map(normHeader);
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length);
+  const headerLine = lines[0];
+  if (!headerLine || lines.length < 2) return [];
+  const headers = splitCsvLine(headerLine).map(normHeader);
   return lines.slice(1).map((line) => {
     const cells = splitCsvLine(line);
     const row: Record<string, string> = {};
@@ -101,7 +109,12 @@ function parseOp(raw: string | undefined): AgentReadyOperationType | undefined {
 
 function inferKindFromName(name: string): AgentReadyKind {
   const n = name.toLowerCase();
-  if (n.includes("prompt") || n.startsWith("list_name_") || n.startsWith("list_hereditary_") || n.startsWith("list_social_")) {
+  if (
+    n.includes("prompt") ||
+    n.startsWith("list_name_") ||
+    n.startsWith("list_hereditary_") ||
+    n.startsWith("list_social_")
+  ) {
     return "prompt";
   }
   if (/^(create|change|update|request|submit|cancel|approve|deny|put|post|patch)/i.test(name)) return "advanced";
@@ -111,8 +124,7 @@ function inferKindFromName(name: string): AgentReadyKind {
 function rowToTool(row: Record<string, string>): AgentReadyToolDefinition | null {
   const name = row.name || row.tool_name || row.tool || "";
   if (!name) return null;
-  const kind =
-    parseKind(row.type ?? row.kind ?? row.tool_type ?? row.tooltype) ?? inferKindFromName(name);
+  const kind = parseKind(row.type ?? row.kind ?? row.tool_type ?? row.tooltype) ?? inferKindFromName(name);
   const description = row.description || row.desc || `(Agent-Ready MCP tool: ${name})`;
   const productArea =
     row.product_area || row.productarea || row.product_line || row.productline || row.area || undefined;
@@ -120,7 +132,10 @@ function rowToTool(row: Record<string, string>): AgentReadyToolDefinition | null
   const operationType = parseOp(row.operation_type ?? row.operationtype ?? row.operation);
   const promptsRaw = row.required_prompt_tools || row.requiredprompttools || row.required_prompts || "";
   const requiredPromptTools = promptsRaw
-    ? promptsRaw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)
+    ? promptsRaw
+        .split(/[,;]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
     : undefined;
   return {
     name,
@@ -215,7 +230,7 @@ function emitTs(tools: AgentReadyToolDefinition[], sources: string[]): string {
     tools: sorted,
   };
   return `/**
- * GENERATED FILE — do not hand-edit.
+ * GENERATED FILE, do not hand-edit.
  * Regenerate: pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
  * See src/agent-ready/sync.md
  */

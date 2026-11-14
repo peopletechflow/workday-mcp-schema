@@ -10,7 +10,7 @@
  *     overall total are hidden too, so suppressed counts cannot be derived by subtraction
  *   - populations smaller than k return nothing but `suppressed: true`
  *   - no worker ids, names or per-person values ever leave this function
- * RBAC: recipe `aggregate_diversity` — hr_partner (OrgScope proof for the org) and admin only.
+ * RBAC: recipe `aggregate_diversity`, hr_partner (OrgScope proof for the org) and admin only.
  *
  * admin-skill Rule 3: any read touching MORE THAN ONE worker's demographic data (personal
  * information, ethnicity, gender, marital status) must go through this filter:

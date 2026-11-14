@@ -7,7 +7,7 @@ export const IsoDateSchema = z
   .describe("ISO calendar date (YYYY-MM-DD)");
 
 /** ISO 8601 timestamp with offset or Z. */
-export const IsoDateTimeSchema = z.string().datetime({ offset: true }).describe("ISO 8601 timestamp");
+export const IsoDateTimeSchema = z.iso.datetime({ offset: true }).describe("ISO 8601 timestamp");
 
 export const WorkdayIdTypeSchema = z.enum([
   "WID",
@@ -46,18 +46,36 @@ export function typedId(...types: [WorkdayIdType, ...WorkdayIdType[]]) {
   });
 }
 
-export const WorkerIdSchema = typedId("Employee_ID", "Contingent_Worker_ID");
-export const PositionIdSchema = typedId("Position_ID");
-export const OrganizationIdSchema = typedId("Organization_Reference_ID");
-export const SupervisoryOrgIdSchema = typedId("Supervisory_Organization_ID", "Organization_Reference_ID");
-export const CostCenterIdSchema = typedId("Cost_Center_Reference_ID", "Organization_Reference_ID");
-export const LocationIdSchema = typedId("Location_ID");
-export const JobProfileIdSchema = typedId("Job_Profile_ID");
-export const BenefitPlanIdSchema = typedId("Benefit_Plan_ID");
-export const PayGroupIdSchema = typedId("Pay_Group_ID");
-export const PayStatementIdSchema = typedId("Pay_Statement_ID");
-export const TimeOffEntryIdSchema = typedId("Time_Off_Entry_ID", "Business_Process_Event_ID");
-export const BusinessProcessEventIdSchema = typedId("Business_Process_Event_ID");
+export const WorkerIdSchema = typedId("Employee_ID", "Contingent_Worker_ID").brand<"WorkerId">();
+export type WorkerId = z.infer<typeof WorkerIdSchema>;
+export const PositionIdSchema = typedId("Position_ID").brand<"PositionId">();
+export type PositionId = z.infer<typeof PositionIdSchema>;
+export const OrganizationIdSchema = typedId("Organization_Reference_ID").brand<"OrganizationId">();
+export type OrganizationId = z.infer<typeof OrganizationIdSchema>;
+export const SupervisoryOrgIdSchema = typedId(
+  "Supervisory_Organization_ID",
+  "Organization_Reference_ID",
+).brand<"SupervisoryOrgId">();
+export type SupervisoryOrgId = z.infer<typeof SupervisoryOrgIdSchema>;
+export const CostCenterIdSchema = typedId(
+  "Cost_Center_Reference_ID",
+  "Organization_Reference_ID",
+).brand<"CostCenterId">();
+export type CostCenterId = z.infer<typeof CostCenterIdSchema>;
+export const LocationIdSchema = typedId("Location_ID").brand<"LocationId">();
+export type LocationId = z.infer<typeof LocationIdSchema>;
+export const JobProfileIdSchema = typedId("Job_Profile_ID").brand<"JobProfileId">();
+export type JobProfileId = z.infer<typeof JobProfileIdSchema>;
+export const BenefitPlanIdSchema = typedId("Benefit_Plan_ID").brand<"BenefitPlanId">();
+export type BenefitPlanId = z.infer<typeof BenefitPlanIdSchema>;
+export const PayGroupIdSchema = typedId("Pay_Group_ID").brand<"PayGroupId">();
+export type PayGroupId = z.infer<typeof PayGroupIdSchema>;
+export const PayStatementIdSchema = typedId("Pay_Statement_ID").brand<"PayStatementId">();
+export type PayStatementId = z.infer<typeof PayStatementIdSchema>;
+export const TimeOffEntryIdSchema = typedId("Time_Off_Entry_ID", "Business_Process_Event_ID").brand<"TimeOffEntryId">();
+export type TimeOffEntryId = z.infer<typeof TimeOffEntryIdSchema>;
+export const BusinessProcessEventIdSchema = typedId("Business_Process_Event_ID").brand<"BusinessProcessEventId">();
+export type BusinessProcessEventId = z.infer<typeof BusinessProcessEventIdSchema>;
 
 /** Reference to another object: ID + descriptor (descriptor is PII when it names a person). */
 export const RefSchema = z.object({
@@ -81,7 +99,7 @@ export const PreviewTokenSchema = z
 
 export const UserConfirmedSchema = z
   .literal(true)
-  .describe("Must be true — explicit confirmation that the user approved the preview summary");
+  .describe("Must be true, explicit confirmation that the user approved the preview summary");
 
 export const TimeOffUnitSchema = z.enum(["HOURS", "DAYS"]);
 export type TimeOffUnit = z.infer<typeof TimeOffUnitSchema>;
@@ -89,7 +107,8 @@ export type TimeOffUnit = z.infer<typeof TimeOffUnitSchema>;
 export const AbsenceTypeIdSchema = WorkdayIdSchema.refine(
   (id) => id.type === "Time_Off_Type_ID" || id.type === "Absence_Table_ID" || id.type === "WID",
   { message: "Absence type must be Time_Off_Type_ID, Absence_Table_ID, or WID" },
-);
+).brand<"TimeOffTypeId">();
+export type TimeOffTypeId = z.infer<typeof AbsenceTypeIdSchema>;
 
 export const CurrencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, "ISO 4217 currency code");
 

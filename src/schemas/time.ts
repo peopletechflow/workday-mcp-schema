@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IsoDateSchema, RefSchema } from "./common.js";
 
-/** Summary only — no clock-in geolocation, device, or punch-level detail. */
+/** Summary only, no clock-in geolocation, device, or punch-level detail. */
 export const TimeEntrySummarySchema = z.object({
   worker: RefSchema, // PII: name
   periodStart: IsoDateSchema,

@@ -45,7 +45,7 @@ export async function verifySlackRequest(args: {
   headers: Record<string, string | undefined>;
   signingSecret: string | undefined;
   replay: ReplayGuard;
-  nowSec?: number;
+  nowSec?: number | undefined;
 }): Promise<void> {
   const { rawBody, headers, signingSecret, replay } = args;
   if (!signingSecret) throw new SlackVerificationError("signing secret not configured");
