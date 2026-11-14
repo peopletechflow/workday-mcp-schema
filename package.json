@@ -54,7 +54,7 @@
     "@electric-sql/pglite": "^0.5.15",
     "@eslint/js": "^10.0.1",
     "@types/eslint": "^9.6.1",
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "eslint": "^10.15.0",
     "gpt-tokenizer": "^3.4.0",
