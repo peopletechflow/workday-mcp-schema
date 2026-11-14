@@ -30,7 +30,10 @@ export function baseEnv(over: Record<string, string> = {}): NodeJS.ProcessEnv {
     WORKDAY_OAUTH_REDIRECT_URI: "https://app.example.test/oauth/callback",
     WORKDAY_OAUTH_AUTHORIZE_URL: "https://wd2-impl.workday.com/acme/authorize",
     WORKDAY_OAUTH_TOKEN_URL: "https://wd2-impl-services1.workday.com/ccx/oauth2/acme/token",
-    WORKDAY_TIME_OFF_TYPE_MAP: JSON.stringify({ vacation: { type: "Time_Off_Type_ID", value: "VACATION" }, sick: { type: "Time_Off_Type_ID", value: "SICK" } }),
+    WORKDAY_TIME_OFF_TYPE_MAP: JSON.stringify({
+      vacation: { type: "Time_Off_Type_ID", value: "VACATION" },
+      sick: { type: "Time_Off_Type_ID", value: "SICK" },
+    }),
     ...over,
   };
 }
@@ -43,10 +46,28 @@ export function signed(body: string, ts?: number, secret = SECRET): Record<strin
 
 export type Instance = ReturnType<typeof buildRuntime> & { logs: string[] };
 
-export function instance(db: Db, o: { env?: Record<string, string>; client?: WorkdayClient; slackApi?: SlackApi; fetchImpl?: typeof fetch; budgetMs?: number } = {}): Instance {
+export function instance(
+  db: Db,
+  o: {
+    env?: Record<string, string>;
+    client?: WorkdayClient;
+    slackApi?: SlackApi;
+    fetchImpl?: typeof fetch;
+    budgetMs?: number;
+  } = {},
+): Instance {
   const env = baseEnv(o.env);
   const logs: string[] = [];
-  const rt = buildRuntime({ cfg: loadRuntimeConfig(env), db, env, workdayClient: o.client, slackApi: o.slackApi, fetchImpl: o.fetchImpl, budgetMs: o.budgetMs, log: (f) => logs.push(JSON.stringify(f)) });
+  const rt = buildRuntime({
+    cfg: loadRuntimeConfig(env),
+    db,
+    env,
+    workdayClient: o.client,
+    slackApi: o.slackApi,
+    fetchImpl: o.fetchImpl,
+    budgetMs: o.budgetMs,
+    log: (f) => logs.push(JSON.stringify(f)),
+  });
   return Object.assign(rt, { logs });
 }
 
@@ -54,20 +75,35 @@ export function instance(db: Db, o: { env?: Record<string, string>; client?: Wor
 export async function seed(db: Db, opts: { approvers?: string[]; rotate?: boolean } = {}): Promise<void> {
   await migrate(db);
   const rt = instance(db);
-  const users: Array<[string, string, string[]]> = [["U0ALICE", "alice", ["worker_self"]], ["U0MGR", "mgr", ["worker_self", "manager"]], ["U0MALLORY", "mallory", ["worker_self"]], ["U0HR", "hr", ["worker_self", "hr_partner"]]];
+  const users: Array<[string, string, string[]]> = [
+    ["U0ALICE", "alice", ["worker_self"]],
+    ["U0MGR", "mgr", ["worker_self", "manager"]],
+    ["U0MALLORY", "mallory", ["worker_self"]],
+    ["U0HR", "hr", ["worker_self", "hr_partner"]],
+  ];
   for (const [slack, user, roles] of users) {
     await rt.links.invite("seed", { slackTeamId: TEAM, slackUserId: slack, tenantId: "acme", userId: user });
     await db.query("UPDATE identity_links SET status = 'active', linked_at = now() WHERE slack_user_id = $1", [slack]);
     await rt.entitlements.set("seed", { tenantId: "acme", userId: user }, { roles });
-    await rt.tokens.set(user, { accessToken: `at-${user}-SENSITIVE`, refreshToken: `rt-${user}-SENSITIVE`, expiresAt: Date.now() + 3_600_000, tokenType: "Bearer" });
+    await rt.tokens.set(user, {
+      accessToken: `at-${user}-SENSITIVE`,
+      refreshToken: `rt-${user}-SENSITIVE`,
+      expiresAt: Date.now() + 3_600_000,
+      tokenType: "Bearer",
+    });
   }
-  await rt.backend.setPolicy("seed", { tenantId: "acme", commitTool: "commit_request_time_off", approverUserIds: opts.approvers ?? ["mgr", "alice", "hr"], rotate: opts.rotate });
+  await rt.backend.setPolicy("seed", {
+    tenantId: "acme",
+    commitTool: "commit_request_time_off",
+    approverUserIds: opts.approvers ?? ["mgr", "alice", "hr"],
+    rotate: opts.rotate === true,
+  });
 }
 
 /** Fake Slack Web API: records views.open, chat.postMessage, and response_url posts. */
 export function fakeSlack(delayMs = 0, ok = true) {
   const calls: Array<{ triggerId: string; view: Record<string, unknown> }> = [];
-  const posts: Array<{ channel: string; text: string; blocks?: Record<string, unknown>[] }> = [];
+  const posts: Array<{ channel: string; text: string; blocks?: Record<string, unknown>[] | undefined }> = [];
   const responses: Array<{ url: string; body: Record<string, unknown> }> = [];
   const api: SlackApi = {
     async viewsOpen(triggerId, view) {
@@ -91,21 +127,55 @@ export function fakeSlack(delayMs = 0, ok = true) {
 export const slackText = (s: ReturnType<typeof fakeSlack>) => JSON.stringify([s.calls, s.posts, s.responses]);
 
 export const cmdBody = (text = "", o: Record<string, string> = {}) =>
-  new URLSearchParams({ team_id: TEAM, user_id: "U0ALICE", channel_id: CHANNEL, command: "/workday", text, trigger_id: "1334.7384.abc", ...o }).toString();
+  new URLSearchParams({
+    team_id: TEAM,
+    user_id: "U0ALICE",
+    channel_id: CHANNEL,
+    command: "/workday",
+    text,
+    trigger_id: "1334.7384.abc",
+    ...o,
+  }).toString();
 
-export function submission(nonce: string, values: { start: string; end: string; type: string; days: string }, user = "U0ALICE", team = TEAM): string {
+export function submission(
+  nonce: string,
+  values: { start: string; end: string; type: string; days: string },
+  user = "U0ALICE",
+  team = TEAM,
+): string {
   const v = (x: unknown) => ({ v: x });
-  return `payload=${encodeURIComponent(JSON.stringify({
-    type: "view_submission", team: { id: team }, user: { id: user },
-    view: { callback_id: "wd_time_off_request", private_metadata: nonce, state: { values: {
-      start: v({ selected_date: values.start }), end: v({ selected_date: values.end }), type: v({ selected_option: { value: values.type } }), days: v({ value: values.days }), comment: v({ value: null }),
-    } } },
-  }))}`;
+  return `payload=${encodeURIComponent(
+    JSON.stringify({
+      type: "view_submission",
+      team: { id: team },
+      user: { id: user },
+      view: {
+        callback_id: "wd_time_off_request",
+        private_metadata: nonce,
+        state: {
+          values: {
+            start: v({ selected_date: values.start }),
+            end: v({ selected_date: values.end }),
+            type: v({ selected_option: { value: values.type } }),
+            days: v({ value: values.days }),
+            comment: v({ value: null }),
+          },
+        },
+      },
+    }),
+  )}`;
 }
 
 export const RESPONSE_URL = "https://hooks.slack.com/actions/T0ALLOWED/123/abc";
 
-export const button = (requestId: string, hash: string, user: string, action = "wd_approval_approve", team = TEAM, responseUrl?: string) =>
+export const button = (
+  requestId: string,
+  hash: string,
+  user: string,
+  action = "wd_approval_approve",
+  team = TEAM,
+  responseUrl?: string,
+) =>
   `payload=${encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: team }, user: { id: user }, ...(responseUrl ? { response_url: responseUrl } : {}), actions: [{ action_id: action, value: `${requestId}|${hash}` }] }))}`;
 
 /** The requester's "Submit to Workday" button (value is the request id only). */

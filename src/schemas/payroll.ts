@@ -7,7 +7,7 @@ import { CurrencyCodeSchema, IsoDateSchema, PayGroupIdSchema, PayStatementIdSche
  */
 export const PayStatementSummarySchema = z.object({
   statementId: PayStatementIdSchema,
-  payGroup: z.object({ id: PayGroupIdSchema, name: z.string() }),
+  payGroup: z.object({ id: PayGroupIdSchema, name: z.string().min(1).max(256) }),
   periodStart: IsoDateSchema,
   periodEnd: IsoDateSchema,
   payDate: IsoDateSchema,

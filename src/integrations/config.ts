@@ -6,7 +6,10 @@
 import { z } from "zod";
 
 function list(raw: string | undefined): string[] {
-  return (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 function bool(raw: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((raw ?? "").toLowerCase());
@@ -15,17 +18,17 @@ function bool(raw: string | undefined): boolean {
 export type SlackConfig = {
   enabled: boolean;
   /** Raw signing secret, held only in process memory. */
-  signingSecret?: string;
+  signingSecret?: string | undefined;
   allowedTeamIds: string[];
   allowedChannelIds: string[];
-  botUserId?: string;
-  identityMapPath?: string;
+  botUserId?: string | undefined;
+  identityMapPath?: string | undefined;
   maxBodyBytes: number;
   maxIntakeTextChars: number;
   /** Approval delivery to Slack only when "explicit" AND channel + token configured. */
   approvalDelivery: "off" | "explicit";
-  approvalChannelId?: string;
-  botToken?: string;
+  approvalChannelId?: string | undefined;
+  botToken?: string | undefined;
   formTtlMs: number;
 };
 
@@ -33,14 +36,14 @@ export type NotionConfig = {
   enabled: boolean;
   /** delegated: per-user token from a server-side store. allowlist: server token limited to policy file resources. */
   mode: "delegated" | "allowlist";
-  resourcePolicyPath?: string;
+  resourcePolicyPath?: string | undefined;
   /** Used only in allowlist mode, and only for resources in the policy file. */
-  serviceToken?: string;
+  serviceToken?: string | undefined;
   maxChars: number;
 };
 
 export type ApprovalConfig = {
-  policyPath?: string;
+  policyPath?: string | undefined;
   /** How long an approver has to decide after the request is proposed. */
   decisionTtlMs: number;
   /** How long the requester has to submit after approval. */
@@ -49,7 +52,13 @@ export type ApprovalConfig = {
 
 const HOUR_MS = 60 * 60 * 1000;
 const ttl = (raw: string | undefined, fallback: number) =>
-  z.coerce.number().int().min(60_000).max(14 * 24 * HOUR_MS).catch(fallback).parse(raw ?? fallback);
+  z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(14 * 24 * HOUR_MS)
+    .catch(fallback)
+    .parse(raw ?? fallback);
 
 export type IntegrationConfig = { slack: SlackConfig; notion: NotionConfig; approvals: ApprovalConfig };
 
@@ -62,8 +71,20 @@ export function loadIntegrationConfig(env: NodeJS.ProcessEnv = process.env): Int
     allowedChannelIds: list(env.SLACK_ALLOWED_CHANNEL_IDS),
     botUserId: env.SLACK_BOT_USER_ID || undefined,
     identityMapPath: env.SLACK_IDENTITY_MAP_PATH || undefined,
-    maxBodyBytes: z.coerce.number().int().positive().max(1_000_000).catch(65_536).parse(env.SLACK_MAX_BODY_BYTES ?? 65_536),
-    maxIntakeTextChars: z.coerce.number().int().positive().max(20_000).catch(4_000).parse(env.SLACK_MAX_INTAKE_CHARS ?? 4_000),
+    maxBodyBytes: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(1_000_000)
+      .catch(65_536)
+      .parse(env.SLACK_MAX_BODY_BYTES ?? 65_536),
+    maxIntakeTextChars: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(20_000)
+      .catch(4_000)
+      .parse(env.SLACK_MAX_INTAKE_CHARS ?? 4_000),
     approvalDelivery: env.SLACK_APPROVAL_DELIVERY === "explicit" ? "explicit" : "off",
     approvalChannelId: env.SLACK_APPROVAL_CHANNEL_ID || undefined,
     botToken: env.SLACK_BOT_TOKEN || undefined,

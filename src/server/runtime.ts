@@ -45,12 +45,16 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
   const databaseUrl = env.DATABASE_URL ?? "";
   const errors: string[] = [];
   if (!databaseUrl) errors.push("DATABASE_URL is required");
-  if (!env.TOKEN_ENCRYPTION_KEY || !env.TOKEN_ENCRYPTION_KEY_ID) errors.push("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_ID are required");
+  if (!env.TOKEN_ENCRYPTION_KEY || !env.TOKEN_ENCRYPTION_KEY_ID)
+    errors.push("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_ID are required");
   if (production) {
     if (app.useFixtures) errors.push("NODE_ENV=production requires WORKDAY_USE_FIXTURES=false");
-    if (!app.oauthRedirectUri.startsWith("https://")) errors.push("WORKDAY_OAUTH_REDIRECT_URI must be https in production");
-    if (integrations.slack.enabled && !integrations.slack.botToken) errors.push("SLACK_BOT_TOKEN is required for forms (views.open) in production");
-    if (env.WORKDAY_TOKEN_ENCRYPTION_KEY === "local-dev-only-change-me") errors.push("Do not use the local dev token key");
+    if (!app.oauthRedirectUri.startsWith("https://"))
+      errors.push("WORKDAY_OAUTH_REDIRECT_URI must be https in production");
+    if (integrations.slack.enabled && !integrations.slack.botToken)
+      errors.push("SLACK_BOT_TOKEN is required for forms (views.open) in production");
+    if (env.WORKDAY_TOKEN_ENCRYPTION_KEY === "local-dev-only-change-me")
+      errors.push("Do not use the local dev token key");
     if (env.LINK_ACCEPT_UNVERIFIED_SIGNER !== "true") {
       errors.push(
         "LINK_ACCEPT_UNVERIFIED_SIGNER=true is required in production: account linking does not yet verify that the Workday account " +
@@ -58,7 +62,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       );
     }
   }
-  const port = z.coerce.number().int().min(1).max(65535).safeParse(env.PORT ?? "8787");
+  const port = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65535)
+    .safeParse(env.PORT ?? "8787");
   if (!port.success) errors.push("PORT must be 1-65535");
   if (errors.length) throw new Error(`Invalid runtime configuration:\n- ${errors.join("\n- ")}`);
   return {
@@ -75,20 +84,23 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
 
 /** Intake sink that records only metadata in logs (message text is not persisted). */
 export function metadataOnlySink(log: LogFn): IntakeSink {
-  return { put: (r: IntakeRecord) => log({ evt: "intake_record", tenant: r.identity.tenantId, channel: r.channelId, chars: r.text.length }) };
+  return {
+    put: (r: IntakeRecord) =>
+      log({ evt: "intake_record", tenant: r.identity.tenantId, channel: r.channelId, chars: r.text.length }),
+  };
 }
 
 export function buildRuntime(opts: {
   cfg: RuntimeConfig;
   db: Db;
-  env?: NodeJS.ProcessEnv;
-  workdayClient?: WorkdayClient;
-  slackApi?: SlackApi;
-  fetchImpl?: typeof fetch;
-  log?: LogFn;
-  sink?: IntakeSink;
-  nowSec?: number;
-  budgetMs?: number;
+  env?: NodeJS.ProcessEnv | undefined;
+  workdayClient?: WorkdayClient | undefined;
+  slackApi?: SlackApi | undefined;
+  fetchImpl?: typeof fetch | undefined;
+  log?: LogFn | undefined;
+  sink?: IntakeSink | undefined;
+  nowSec?: number | undefined;
+  budgetMs?: number | undefined;
 }) {
   const { cfg, db } = opts;
   const env = opts.env ?? process.env;
@@ -98,9 +110,17 @@ export function buildRuntime(opts: {
   const links = new DbIdentityLinks(db);
   const entitlements = new DbEntitlements(db);
   const tokens = new DbTokenStore(db, keys, tenantId);
-  const backend = new DbApprovalBackend(db, cfg.integrations.approvals.decisionTtlMs, undefined, cfg.integrations.approvals.commitWindowMs);
+  const backend = new DbApprovalBackend(
+    db,
+    cfg.integrations.approvals.decisionTtlMs,
+    undefined,
+    cfg.integrations.approvals.commitWindowMs,
+  );
   const client: WorkdayClient =
-    opts.workdayClient ?? (cfg.app.useFixtures ? new FixtureWorkdayClient() : new HttpWorkdayClient(cfg.app, workdayClientOptions(cfg.app), opts.fetchImpl));
+    opts.workdayClient ??
+    (cfg.app.useFixtures
+      ? new FixtureWorkdayClient()
+      : new HttpWorkdayClient(cfg.app, workdayClientOptions(cfg.app), opts.fetchImpl));
   const accessToken = durableAccessTokens(db, tokens, cfg.app, opts.fetchImpl);
   const required = ["timeOffDetails.list", "requestTimeOff.create"] as const;
   const service = new ApprovalExecutionService({
@@ -115,13 +135,22 @@ export function buildRuntime(opts: {
     assertCommitContract: cfg.app.useFixtures
       ? undefined
       : () => {
-          for (const op of required) if (!cfg.app.validatedOperations.includes(op)) throw new ContractNotValidatedError(op);
+          for (const op of required)
+            if (!cfg.app.validatedOperations.includes(op)) throw new ContractNotValidatedError(op);
         },
     log,
   });
   const link = new LinkService({ db, config: cfg.app, keys, links, tokens, fetchImpl: opts.fetchImpl });
-  const slackApi = opts.slackApi ?? (cfg.integrations.slack.botToken ? createHttpSlackApi(cfg.integrations.slack.botToken) : undefined);
-  const notifier = new SlackApprovalNotifier({ config: cfg.integrations.slack, api: slackApi, directory: links, commandName: cfg.commandName, log });
+  const slackApi =
+    opts.slackApi ??
+    (cfg.integrations.slack.botToken ? createHttpSlackApi(cfg.integrations.slack.botToken) : undefined);
+  const notifier = new SlackApprovalNotifier({
+    config: cfg.integrations.slack,
+    api: slackApi,
+    directory: links,
+    commandName: cfg.commandName,
+    log,
+  });
   const background = new BackgroundTasks({ log });
   const ready = async () => (await migrationStatus(db)).state === "up_to_date";
   const route = createRouter({

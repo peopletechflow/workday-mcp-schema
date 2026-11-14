@@ -46,20 +46,44 @@ export class DbFormSessions implements FormSessions {
     return nonce;
   }
   async peek(nonce: string): Promise<FormSession | undefined> {
-    const r = await this.db.query<{ slack_team_id: string; slack_user_id: string; tenant_id: string; user_id: string; kind: string; exp: string }>(
+    const r = await this.db.query<{
+      slack_team_id: string;
+      slack_user_id: string;
+      tenant_id: string;
+      user_id: string;
+      kind: string;
+      exp: string;
+    }>(
       "SELECT slack_team_id, slack_user_id, tenant_id, user_id, kind, extract(epoch from expires_at)*1000 AS exp FROM form_sessions WHERE nonce = $1 AND expires_at > now()",
       [nonce],
     );
     const x = r.rows[0];
-    return x && { slackTeamId: x.slack_team_id, slackUserId: x.slack_user_id, identity: { tenantId: x.tenant_id, userId: x.user_id }, kind: x.kind, expiresAt: Number(x.exp) };
+    return (
+      x && {
+        slackTeamId: x.slack_team_id,
+        slackUserId: x.slack_user_id,
+        identity: { tenantId: x.tenant_id, userId: x.user_id },
+        kind: x.kind,
+        expiresAt: Number(x.exp),
+      }
+    );
   }
   async consume(nonce: string, q: Queryable = this.db): Promise<boolean> {
     return (await q.query("DELETE FROM form_sessions WHERE nonce = $1 AND expires_at > now()", [nonce])).rowCount === 1;
   }
 }
 
-export async function adminAudit(q: Queryable, actor: string, action: string, detail: Record<string, unknown>): Promise<void> {
-  await q.query("INSERT INTO admin_audit (actor, action, detail) VALUES ($1, $2, $3)", [actor, action, JSON.stringify(detail)]);
+export async function adminAudit(
+  q: Queryable,
+  actor: string,
+  action: string,
+  detail: Record<string, unknown>,
+): Promise<void> {
+  await q.query("INSERT INTO admin_audit (actor, action, detail) VALUES ($1, $2, $3)", [
+    actor,
+    action,
+    JSON.stringify(detail),
+  ]);
 }
 
 /**
@@ -95,7 +119,10 @@ export class DbIdentityLinks implements IdentityResolver, SlackDirectory {
     const x = r.rows[0];
     return x && { tenantId: x.tenant_id, userId: x.user_id };
   }
-  async invite(actor: string, l: { slackTeamId: string; slackUserId: string; tenantId: string; userId: string }): Promise<void> {
+  async invite(
+    actor: string,
+    l: { slackTeamId: string; slackUserId: string; tenantId: string; userId: string },
+  ): Promise<void> {
     await this.db.tx(async (q) => {
       await q.query(
         `INSERT INTO identity_links (slack_team_id, slack_user_id, tenant_id, user_id, status, created_by)
@@ -135,7 +162,13 @@ export class DbIdentityLinks implements IdentityResolver, SlackDirectory {
 export class DbEntitlements {
   constructor(private readonly db: Db) {}
   async authzFor(identity: BoundIdentity): Promise<{ roles: Role[]; assignments: AssignmentStore }> {
-    const r = await this.db.query<{ roles: string[]; grants: string[]; denies: string[]; updated_by: string; updated_at: Date }>(
+    const r = await this.db.query<{
+      roles: string[];
+      grants: string[];
+      denies: string[];
+      updated_by: string;
+      updated_at: Date;
+    }>(
       "SELECT roles, grants, denies, updated_by, updated_at FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
       [identity.tenantId, identity.userId],
     );
@@ -143,13 +176,30 @@ export class DbEntitlements {
     const x = r.rows[0];
     if (!x) return { roles: [], assignments: store };
     const roles = parseRoles(x.roles.join(","));
-    store.set({ userId: identity.userId, roles, grants: x.grants, denies: x.denies, updatedAt: new Date(x.updated_at).toISOString(), updatedBy: x.updated_by });
+    store.set({
+      userId: identity.userId,
+      roles,
+      grants: x.grants,
+      denies: x.denies,
+      updatedAt: new Date(x.updated_at).toISOString(),
+      updatedBy: x.updated_by,
+    });
     return { roles, assignments: store };
   }
-  async set(actor: string, identity: BoundIdentity, v: { roles: string[]; grants?: string[]; denies?: string[] }): Promise<void> {
+  async set(
+    actor: string,
+    identity: BoundIdentity,
+    v: { roles: string[]; grants?: string[]; denies?: string[] },
+  ): Promise<void> {
     const roles = parseRoles(v.roles.join(","));
     // Validate permission ids by normalizing through the existing store (throws on unknown ids).
-    new InMemoryAssignmentStore().set({ userId: identity.userId, roles, grants: v.grants ?? [], denies: v.denies ?? [], updatedAt: new Date().toISOString() });
+    new InMemoryAssignmentStore().set({
+      userId: identity.userId,
+      roles,
+      grants: v.grants ?? [],
+      denies: v.denies ?? [],
+      updatedAt: new Date().toISOString(),
+    });
     await this.db.tx(async (q) => {
       await q.query(
         `INSERT INTO role_assignments (tenant_id, user_id, roles, grants, denies, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
@@ -163,7 +213,11 @@ export class DbEntitlements {
 
 /** Per-user encrypted OAuth tokens. AAD binds ciphertext to tenant+user. */
 export class DbTokenStore {
-  constructor(private readonly db: Db, private readonly keys: KeyRing, private readonly tenantId: string) {}
+  constructor(
+    private readonly db: Db,
+    private readonly keys: KeyRing,
+    private readonly tenantId: string,
+  ) {}
   private aad(userId: string) {
     return `oauth:${this.tenantId}:${userId}`;
   }
@@ -174,7 +228,9 @@ export class DbTokenStore {
     );
     const x = r.rows[0];
     if (!x) return undefined;
-    return JSON.parse(this.keys.open({ keyId: x.key_id, iv: x.iv, tag: x.tag, ciphertext: x.ciphertext }, this.aad(userId))) as OAuthTokens;
+    return JSON.parse(
+      this.keys.open({ keyId: x.key_id, iv: x.iv, tag: x.tag, ciphertext: x.ciphertext }, this.aad(userId)),
+    ) as OAuthTokens;
   }
   async set(userId: string, tokens: OAuthTokens, q: Queryable = this.db): Promise<void> {
     const s = this.keys.seal(JSON.stringify(tokens), this.aad(userId));

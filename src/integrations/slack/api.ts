@@ -13,7 +13,11 @@ export type SlackResult = { ok: boolean; error?: string };
 export interface SlackApi {
   viewsOpen(triggerId: string, view: Record<string, unknown>): Promise<SlackResult>;
   /** `channel` is a channel id or a user id (a user id opens or reuses the app DM). */
-  postMessage(channel: string, text: string, blocks?: Record<string, unknown>[]): Promise<SlackResult & { ts?: string }>;
+  postMessage(
+    channel: string,
+    text: string,
+    blocks?: Record<string, unknown>[],
+  ): Promise<SlackResult & { ts?: string | undefined }>;
   /** POST a response to a Slack `response_url`. Refuses URLs that are not Slack hooks. */
   respond(responseUrl: string, body: Record<string, unknown>): Promise<SlackResult>;
 }
@@ -30,12 +34,19 @@ export function isSlackResponseUrl(url: string | undefined): url is string {
 }
 
 export function createHttpSlackApi(botToken: string, fetchImpl: typeof fetch = fetch): SlackApi {
-  const call = async (url: string, body: Record<string, unknown>, auth: boolean): Promise<SlackResult & { ts?: string }> => {
+  const call = async (
+    url: string,
+    body: Record<string, unknown>,
+    auth: boolean,
+  ): Promise<SlackResult & { ts?: string | undefined }> => {
     let res: Response;
     try {
       res = await fetchImpl(url, {
         method: "POST",
-        headers: { "content-type": "application/json; charset=utf-8", ...(auth ? { authorization: `Bearer ${botToken}` } : {}) },
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          ...(auth ? { authorization: `Bearer ${botToken}` } : {}),
+        },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(SLACK_HTTP_TIMEOUT_MS),
       });
@@ -48,13 +59,20 @@ export function createHttpSlackApi(botToken: string, fetchImpl: typeof fetch = f
   };
   return {
     viewsOpen: (triggerId, view) => call("https://slack.com/api/views.open", { trigger_id: triggerId, view }, true),
-    postMessage: (channel, text, blocks) => call("https://slack.com/api/chat.postMessage", { channel, text, ...(blocks ? { blocks } : {}) }, true),
-    respond: (responseUrl, body) => (isSlackResponseUrl(responseUrl) ? call(responseUrl, body, false) : Promise.resolve({ ok: false, error: "bad_response_url" })),
+    postMessage: (channel, text, blocks) =>
+      call("https://slack.com/api/chat.postMessage", { channel, text, ...(blocks ? { blocks } : {}) }, true),
+    respond: (responseUrl, body) =>
+      isSlackResponseUrl(responseUrl)
+        ? call(responseUrl, body, false)
+        : Promise.resolve({ ok: false, error: "bad_response_url" }),
   };
 }
 
 /** Resolve within budgetMs or report a timeout; the underlying promise keeps running. */
-export async function withinBudget<T>(p: Promise<T>, budgetMs: number): Promise<{ done: true; value: T } | { done: false }> {
+export async function withinBudget<T>(
+  p: Promise<T>,
+  budgetMs: number,
+): Promise<{ done: true; value: T } | { done: false }> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<{ done: false }>((resolve) => {
     timer = setTimeout(() => resolve({ done: false }), budgetMs);

@@ -11,15 +11,10 @@
  * Workday security on the user's token remains authoritative.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { z } from "zod";
 import type { Role } from "./roles.js";
 import { parseRoles } from "./roles.js";
-import {
-  buildPermissionCatalog,
-  isKnownPermissionId,
-  permissionIdForTool,
-  type PermissionCatalogEntry,
-  type PermissionId,
-} from "./permission-ids.js";
+import { buildPermissionCatalog, isKnownPermissionId, type PermissionCatalogEntry } from "./permission-ids.js";
 
 export type UserPermissionAssignment = {
   userId: string;
@@ -29,7 +24,7 @@ export type UserPermissionAssignment = {
   /** Permission ids explicitly blocked (wins over roles + grants). */
   denies: string[];
   updatedAt: string;
-  updatedBy?: string;
+  updatedBy?: string | undefined;
 };
 
 export interface AssignmentStore {
@@ -85,23 +80,35 @@ export class InMemoryAssignmentStore implements AssignmentStore {
   }
 }
 
-type FileShape = {
-  assignments?: Array<{
-    userId: string;
-    roles?: string[];
-    grants?: string[];
-    denies?: string[];
-    updatedAt?: string;
-    updatedBy?: string;
-  }>;
-};
+const AssignmentFileSchema = z.object({
+  assignments: z
+    .array(
+      z.object({
+        userId: z.string().min(1).max(256),
+        roles: z.array(z.string().max(64)).max(20).optional(),
+        grants: z.array(z.string().max(200)).max(500).optional(),
+        denies: z.array(z.string().max(200)).max(500).optional(),
+        updatedAt: z.string().max(64).optional(),
+        updatedBy: z.string().max(256).optional(),
+      }),
+    )
+    .max(10_000)
+    .optional(),
+});
 
 /** Load assignments from a JSON file (enterprise config). Missing file → empty store. */
 export function loadAssignmentsFromJsonFile(path: string): InMemoryAssignmentStore {
   const store = new InMemoryAssignmentStore();
   if (!existsSync(path)) return store;
-  const raw = JSON.parse(readFileSync(path, "utf8")) as FileShape;
-  for (const row of raw.assignments ?? []) {
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("RBAC assignment file is not valid JSON.");
+  }
+  const parsed = AssignmentFileSchema.safeParse(json);
+  if (!parsed.success) throw new Error("RBAC assignment file is not valid.");
+  for (const row of parsed.data.assignments ?? []) {
     store.set({
       userId: row.userId,
       roles: parseRoles((row.roles ?? []).join(",")),
@@ -123,10 +130,7 @@ function parsePermissionIdList(raw: string | undefined): string[] {
  * - WORKDAY_USER_ROLES (existing)
  * - WORKDAY_USER_GRANTS / WORKDAY_USER_DENIES (comma-separated permission ids)
  */
-export function seedAssignmentsFromEnv(
-  store: AssignmentStore,
-  env: NodeJS.ProcessEnv = process.env,
-): AssignmentStore {
+export function seedAssignmentsFromEnv(store: AssignmentStore, env: NodeJS.ProcessEnv = process.env): AssignmentStore {
   const userId = env.WORKDAY_USER_ID?.trim() || "local-user";
   const roles = parseRoles(env.WORKDAY_USER_ROLES ?? "worker_self");
   const grants = parsePermissionIdList(env.WORKDAY_USER_GRANTS);
@@ -297,4 +301,3 @@ export function clearDeny(
   });
   return store.get(userId);
 }
-

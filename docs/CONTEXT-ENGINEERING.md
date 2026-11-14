@@ -6,12 +6,12 @@ This page says how the repo applies that, so changes to prompts, tools, and `AGE
 
 ## Where the rules apply
 
-| Surface | File | What goes into the model's context |
-| --- | --- | --- |
-| Slack and Notion agent | `src/ai/integration-agent.ts` | `INTEGRATION_SYSTEM_PROMPT`, the permission-built toolset, wrapped tool results |
-| Enterprise Layer-3 agent | `src/ai/enterprise-agent.ts` | `DEFAULT_INSTRUCTIONS`, reads and previews (commit tools only when `allowWriteCommits` is true), tool results wrapped with `wrapUntrusted` |
-| Audit log | `src/safety/audit.ts` | Redacted inputs, a status, and a scrubbed error message. `summarizeToolResult` is not called here. |
-| Coding agents working on this repo | `AGENTS.md`, `docs/*.md` | The up-front guide plus files read on demand |
+| Surface                            | File                          | What goes into the model's context                                                                                                         |
+| ---------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Slack and Notion agent             | `src/ai/integration-agent.ts` | `INTEGRATION_SYSTEM_PROMPT`, the permission-built toolset, wrapped tool results                                                            |
+| Enterprise Layer-3 agent           | `src/ai/enterprise-agent.ts`  | `DEFAULT_INSTRUCTIONS`, reads and previews (commit tools only when `allowWriteCommits` is true), tool results wrapped with `wrapUntrusted` |
+| Audit log                          | `src/safety/audit.ts`         | Redacted inputs, a status, and a scrubbed error message. `summarizeToolResult` is not called here.                                         |
+| Coding agents working on this repo | `AGENTS.md`, `docs/*.md`      | The up-front guide plus files read on demand                                                                                               |
 
 ## System prompts: one altitude, sections, canonical examples
 
@@ -28,8 +28,8 @@ The article names bloated tool sets and ambiguous tool choice as common failure 
 
 - The toolset is built per request from the caller's permissions (`buildIntegrationToolset`), so the model only ever sees tools it can use. A missing tool is itself a signal, and the prompt says what it means.
 - Tool descriptions and parameters come from the schema-first contracts in `src/schemas/tools` through `contractFor(name)`. The model reads the same text and parameter descriptions a human integrator would. `buildReason` (internal build-vs-buy rationale) is no longer shown to the model.
-- Write actions are one tool each (`propose_time_off_request`) with a strict schema and no identity fields; preview and commit tools are never exposed to the integration agent, so there is no decision point about which write tool to call.
-- The enterprise agent omits `commit_*` tools unless `allowWriteCommits` is true, and wraps every tool result with `wrapUntrusted`. The prompt says text inside that tag is data.
+- The MCP surface is 13 outcome tools. The integration agent sees only the read actions of those tools, plus `propose_time_off_request` (a strict schema, no identity fields). It never sees a commit action.
+- The enterprise agent omits commit actions unless `allowWriteCommits` is true, and wraps every tool result with `wrapUntrusted`. The prompt says text inside that tag is data. A time-off read is `time_off` with action `balances`.
 - `notion_read_page` takes an enum of the pages the caller may read, labelled. The model picks by label; it does not search.
 
 ## Just-in-time context, not pre-loading

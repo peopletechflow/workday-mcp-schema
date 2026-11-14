@@ -63,10 +63,7 @@ export function listAgentReadyTools(filter: AgentReadyListFilter = {}): AgentRea
   return rows;
 }
 
-export function getAgentReadyTool(opts: {
-  name?: string;
-  wid?: string;
-}): AgentReadyToolDefinition | undefined {
+export function getAgentReadyTool(opts: { name?: string; wid?: string }): AgentReadyToolDefinition | undefined {
   if (opts.wid) {
     const byWid = getByWid(opts.wid);
     if (byWid) return byWid;

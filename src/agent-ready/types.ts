@@ -1,6 +1,6 @@
 /**
  * Catalog types for Workday native Agent-Ready MCP tools.
- * These are NOT implementations — they document tools that live on Workday's MCP endpoint.
+ * These are NOT implementations, they document tools that live on Workday's MCP endpoint.
  * Names/schemas change without versioning; refresh via scripts/sync-agent-ready-catalog.ts.
  */
 
@@ -18,52 +18,52 @@ export type AgentReadyToolDefinition = {
    * `null` = explicitly unknown (e.g. tenant-discovered tools whose WIDs the UI did not expose).
    * Never invent a WID.
    */
-  wid?: string | null;
+  wid?: string | null | undefined;
   kind: AgentReadyKind;
-  operationType?: AgentReadyOperationType;
+  operationType?: AgentReadyOperationType | undefined;
   /** Product line / area when known (e.g. Workforce, Financials, Talent). */
-  productArea?: string;
+  productArea?: string | undefined;
   description: string;
   /** Finer-grained category inside the product area (e.g. "Worker / Contact"). */
-  category?: string;
+  category?: string | undefined;
   /** True when the tool is known to be read-only (Basic/Prompt, or a read-only Extend skill). */
-  readOnly?: boolean;
+  readOnly?: boolean | undefined;
   /**
    * Input parameters known from discovery notes. Only parameters actually observed are listed;
    * anything else is passed through to Workday MCP unvalidated (see `inputSchemaStatus`).
    */
-  params?: AgentReadyParam[];
+  params?: AgentReadyParam[] | undefined;
   /**
    * "partial" = some params known, the rest pass through; "unknown" = no params captured,
    * discover the live schema on Workday MCP before calling.
    */
-  inputSchemaStatus?: "partial" | "unknown";
+  inputSchemaStatus?: "partial" | "unknown" | undefined;
   /** Workday security domain(s) the tool needs, when stated by the discovery source. */
-  securityDomains?: string[];
+  securityDomains?: string[] | undefined;
   /** Exposes sensitive personal / pay / dependent data (stricter RBAC, see src/rbac/agent-ready.ts). */
-  sensitive?: boolean;
+  sensitive?: boolean | undefined;
   /**
    * Special-category / highly sensitive PII (GDPR Art. 9 data such as ethnicity; passport, visa,
    * national and government IDs). Implies `sensitive`. Never returned per person to roles other
    * than self / hr_partner / admin; diversity is aggregate-only (src/safety/diversity.ts).
    */
-  specialCategory?: boolean;
+  specialCategory?: boolean | undefined;
   /** Extend skills that use this tool (tenant-discovered rows). */
-  skills?: readonly string[];
+  skills?: readonly string[] | undefined;
   /**
    * Write tools only: the staged business-process flow and step this tool performs
    * (open event -> stage -> submit). Executed only via src/safety/native-write-guard.ts.
    */
-  businessProcess?: { flow: string; step: "open" | "stage" | "submit" };
+  businessProcess?: { flow: string; step: "open" | "stage" | "submit" } | undefined;
   /** Free-form discovery notes (pagination, response fields seen, etc.). */
-  notes?: string;
+  notes?: string | undefined;
   /** Prompt tool names required by an Advanced write tool. */
-  requiredPromptTools?: string[];
+  requiredPromptTools?: string[] | undefined;
   /**
    * Provenance for this seed/sync row.
    * e.g. "docs:Discover Available Agent-Ready MCP Tools"
    */
-  source?: string;
+  source?: string | undefined;
 };
 
 /** A parameter observed during discovery. Type is a human description, not a JSON Schema. */

@@ -22,7 +22,13 @@ export type IntakeRecord = {
 };
 
 export type IntakeOutcome =
-  | { status: 200; body: string; kind: "url_verification" | "accepted" | "ignored"; reason?: string; record?: IntakeRecord }
+  | {
+      status: 200;
+      body: string;
+      kind: "url_verification" | "accepted" | "ignored";
+      reason?: string;
+      record?: IntakeRecord;
+    }
   | { status: 401 | 403 | 413 | 400; body: string; kind: "rejected"; reason: string };
 
 const EventEnvelope = z.object({
@@ -41,7 +47,7 @@ const EventEnvelope = z.object({
       ts: z.string().optional(),
       team: z.string().optional(),
     })
-    .passthrough()
+    .loose()
     .optional(),
 });
 
@@ -61,11 +67,15 @@ export type SlackIntakeDeps = {
   identities: IdentityResolver;
   replay: ReplayGuard;
   sink: IntakeSink;
-  log?: IntakeLog;
-  nowSec?: number;
+  log?: IntakeLog | undefined;
+  nowSec?: number | undefined;
 };
 
-export async function handleSlackEvent(rawBody: string, headers: Record<string, string | undefined>, deps: SlackIntakeDeps): Promise<IntakeOutcome> {
+export async function handleSlackEvent(
+  rawBody: string,
+  headers: Record<string, string | undefined>,
+  deps: SlackIntakeDeps,
+): Promise<IntakeOutcome> {
   const log = deps.log ?? defaultLog;
   const { config } = deps;
   const reject = (status: 401 | 403 | 413 | 400, reason: string): IntakeOutcome => {
@@ -75,7 +85,13 @@ export async function handleSlackEvent(rawBody: string, headers: Record<string, 
   if (!config.enabled) return reject(403, "slack_disabled");
   if (Buffer.byteLength(rawBody, "utf8") > config.maxBodyBytes) return reject(413, "body_too_large");
   try {
-    await verifySlackRequest({ rawBody, headers, signingSecret: config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({
+      rawBody,
+      headers,
+      signingSecret: config.signingSecret,
+      replay: deps.replay,
+      nowSec: deps.nowSec,
+    });
   } catch (err) {
     return reject(401, err instanceof SlackVerificationError ? err.reason : "verify_failed");
   }

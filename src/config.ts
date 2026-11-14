@@ -1,13 +1,13 @@
 import { z } from "zod";
 
 const ConfigSchema = z.object({
-  workdayBaseUrl: z.string().url(),
+  workdayBaseUrl: z.url(),
   workdayTenant: z.string().min(1),
   oauthClientId: z.string().min(1),
   oauthClientSecret: z.string().min(1),
-  oauthRedirectUri: z.string().url(),
-  oauthAuthorizeUrl: z.string().url(),
-  oauthTokenUrl: z.string().url(),
+  oauthRedirectUri: z.url(),
+  oauthAuthorizeUrl: z.url(),
+  oauthTokenUrl: z.url(),
   oauthScopes: z.string().default("openid"),
   tokenStorePath: z.string().default(".data/tokens.json"),
   auditLogPath: z.string().default(".data/audit.jsonl"),
@@ -15,10 +15,20 @@ const ConfigSchema = z.object({
   useFixtures: z.boolean().default(true),
   disabledTools: z.array(z.string()).default([]),
   /** Required for live mode; copy the version from your tenant's REST directory. */
-  absenceApiVersion: z.string().regex(/^v\d+(\.\d+)?$/).optional(),
+  absenceApiVersion: z
+    .string()
+    .regex(/^v\d+(\.\d+)?$/)
+    .optional(),
   /** Workday operations validated in sandbox for this deployment (others fail closed). */
   validatedOperations: z.array(z.enum(["requestTimeOff.create", "timeOffDetails.list", "balances.list"])).default([]),
   workdayHttpTimeoutMs: z.number().int().min(1000).max(60000).default(15000),
+  /** Reads per user per tool per window. */
+  rateLimitPerMinute: z.number().int().min(1).max(10_000).default(60),
+  /** Write actions per user per tool per window. */
+  rateLimitWritePerMinute: z.number().int().min(1).max(10_000).default(10),
+  rateLimitWindowMs: z.number().int().min(1_000).max(3_600_000).default(60_000),
+  /** When true, also register one MCP tool per catalog operation. Off by default. */
+  exposeFullCatalog: z.boolean().default(false),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
@@ -69,12 +79,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     oauthClientId: env.WORKDAY_OAUTH_CLIENT_ID ?? "replace_me",
     oauthClientSecret: env.WORKDAY_OAUTH_CLIENT_SECRET ?? "replace_me",
     oauthRedirectUri: env.WORKDAY_OAUTH_REDIRECT_URI ?? "http://127.0.0.1:8787/oauth/callback",
-    oauthAuthorizeUrl:
-      env.WORKDAY_OAUTH_AUTHORIZE_URL ??
-      "https://wd2-impl.workday.com/sandbox_tenant/authorize",
+    oauthAuthorizeUrl: env.WORKDAY_OAUTH_AUTHORIZE_URL ?? "https://wd2-impl.workday.com/sandbox_tenant/authorize",
     oauthTokenUrl:
-      env.WORKDAY_OAUTH_TOKEN_URL ??
-      "https://wd2-impl-services1.workday.com/ccx/oauth2/sandbox_tenant/token",
+      env.WORKDAY_OAUTH_TOKEN_URL ?? "https://wd2-impl-services1.workday.com/ccx/oauth2/sandbox_tenant/token",
     oauthScopes: env.WORKDAY_OAUTH_SCOPES ?? "openid",
     tokenStorePath: env.WORKDAY_TOKEN_STORE_PATH ?? ".data/tokens.json",
     auditLogPath: env.WORKDAY_AUDIT_LOG_PATH ?? ".data/audit.jsonl",
@@ -82,8 +89,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     useFixtures: envBool("WORKDAY_USE_FIXTURES", true, env),
     disabledTools: disabled,
     absenceApiVersion: env.WORKDAY_ABSENCE_API_VERSION || undefined,
-    validatedOperations: (env.WORKDAY_VALIDATED_OPERATIONS ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+    validatedOperations: (env.WORKDAY_VALIDATED_OPERATIONS ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
     workdayHttpTimeoutMs: env.WORKDAY_HTTP_TIMEOUT_MS ? Number(env.WORKDAY_HTTP_TIMEOUT_MS) : 15000,
+    rateLimitPerMinute: env.WORKDAY_RATE_LIMIT_PER_MINUTE ? Number(env.WORKDAY_RATE_LIMIT_PER_MINUTE) : 60,
+    rateLimitWritePerMinute: env.WORKDAY_RATE_LIMIT_WRITE_PER_MINUTE
+      ? Number(env.WORKDAY_RATE_LIMIT_WRITE_PER_MINUTE)
+      : 10,
+    rateLimitWindowMs: env.WORKDAY_RATE_LIMIT_WINDOW_MS ? Number(env.WORKDAY_RATE_LIMIT_WINDOW_MS) : 60_000,
+    exposeFullCatalog: envBool("WORKDAY_EXPOSE_FULL_CATALOG", false, env),
   });
 
   if (!parsed.success) {
@@ -100,7 +116,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   if (!config.useFixtures) {
-    if (!config.absenceApiVersion) throw new Error("WORKDAY_ABSENCE_API_VERSION is required when WORKDAY_USE_FIXTURES=false (no default version).");
+    if (!config.absenceApiVersion)
+      throw new Error("WORKDAY_ABSENCE_API_VERSION is required when WORKDAY_USE_FIXTURES=false (no default version).");
     for (const k of ["oauthClientId", "oauthClientSecret"] as const) {
       if (config[k] === "replace_me") throw new Error(`Live mode requires ${k} to be configured.`);
     }

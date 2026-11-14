@@ -32,17 +32,21 @@ export type CommandDeps = {
   replay: ReplayGuard;
   sessions: FormSessions;
   service: ApprovalExecutionService;
-  slackApi?: SlackApi;
-  notifier?: SlackApprovalNotifier;
+  slackApi?: SlackApi | undefined;
+  notifier?: SlackApprovalNotifier | undefined;
   /** Account linking (durable runtime). Absent means linking is not offered. */
-  link?: { start(slackTeamId: string, slackUserId: string): Promise<string | undefined> };
+  link?: { start(slackTeamId: string, slackUserId: string): Promise<string | undefined> } | undefined;
   commandName: string;
-  nowSec?: number;
-  budgetMs?: number;
-  log?: IntakeLog;
+  nowSec?: number | undefined;
+  budgetMs?: number | undefined;
+  log?: IntakeLog | undefined;
 };
 
-export type CommandAck = { status: 200 | 400 | 401 | 403; body: { response_type: "ephemeral"; text: string } | ""; reason?: string };
+export type CommandAck = {
+  status: 200 | 400 | 401 | 403;
+  body: { response_type: "ephemeral"; text: string } | "";
+  reason?: string;
+};
 
 const ephemeral = (text: string): CommandAck => ({ status: 200, body: { response_type: "ephemeral", text } });
 
@@ -75,7 +79,11 @@ async function openForm(deps: CommandDeps, teamId: string, userId: string, trigg
   return res.value.ok ? "" : "Could not open the form. Please try again.";
 }
 
-export async function handleSlashCommand(rawBody: string, headers: Record<string, string | undefined>, deps: CommandDeps): Promise<CommandAck> {
+export async function handleSlashCommand(
+  rawBody: string,
+  headers: Record<string, string | undefined>,
+  deps: CommandDeps,
+): Promise<CommandAck> {
   const log = deps.log ?? defaultLog;
   const deny = (status: 400 | 401 | 403, reason: string): CommandAck => {
     log({ evt: "command_rejected", reason });
@@ -84,7 +92,13 @@ export async function handleSlashCommand(rawBody: string, headers: Record<string
   if (!deps.config.enabled) return deny(403, "slack_disabled");
   if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return deny(400, "body_too_large");
   try {
-    await verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({
+      rawBody,
+      headers,
+      signingSecret: deps.config.signingSecret,
+      replay: deps.replay,
+      nowSec: deps.nowSec,
+    });
   } catch (e) {
     return deny(401, e instanceof SlackVerificationError ? e.reason : "verify_failed");
   }
@@ -104,7 +118,10 @@ export async function handleSlashCommand(rawBody: string, headers: Record<string
   }
   if (c.text.trim() === "help") return ephemeral(usage(deps.commandName));
   const identity = await deps.identities.resolveSlack(c.team_id, c.user_id);
-  if (!identity) return ephemeral(`Your Slack account is not linked. Run \`${deps.commandName} link\` if an administrator invited you.`);
+  if (!identity)
+    return ephemeral(
+      `Your Slack account is not linked. Run \`${deps.commandName} link\` if an administrator invited you.`,
+    );
 
   const [sub = "", arg = "", ...rest] = c.text.trim().split(/\s+/).filter(Boolean);
   log({ evt: "command", sub: sub || "timeoff", user: fingerprint(identity.userId) });
@@ -144,11 +161,21 @@ const ShortcutSchema = z.object({
 });
 
 /** Global shortcut via the interactivity endpoint (signed, allowlisted, mapped caller). */
-export async function handleShortcut(rawBody: string, headers: Record<string, string | undefined>, deps: CommandDeps): Promise<{ status: 200 | 400 | 401 | 403; reason?: string }> {
+export async function handleShortcut(
+  rawBody: string,
+  headers: Record<string, string | undefined>,
+  deps: CommandDeps,
+): Promise<{ status: 200 | 400 | 401 | 403; reason?: string }> {
   if (!deps.config.enabled) return { status: 403, reason: "slack_disabled" };
   if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return { status: 400, reason: "body_too_large" };
   try {
-    await verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({
+      rawBody,
+      headers,
+      signingSecret: deps.config.signingSecret,
+      replay: deps.replay,
+      nowSec: deps.nowSec,
+    });
   } catch (e) {
     return { status: 401, reason: e instanceof SlackVerificationError ? e.reason : "verify_failed" };
   }
@@ -161,7 +188,8 @@ export async function handleShortcut(rawBody: string, headers: Record<string, st
   const p = ShortcutSchema.safeParse(payload);
   if (!p.success || p.data.callback_id !== TIME_OFF_SHORTCUT_ID) return { status: 400, reason: "bad_shortcut" };
   if (!deps.config.allowedTeamIds.includes(p.data.team.id)) return { status: 403, reason: "team_not_allowed" };
-  if (!(await deps.identities.resolveSlack(p.data.team.id, p.data.user.id))) return { status: 403, reason: "unlinked_user" };
+  if (!(await deps.identities.resolveSlack(p.data.team.id, p.data.user.id)))
+    return { status: 403, reason: "unlinked_user" };
   const msg = await openForm(deps, p.data.team.id, p.data.user.id, p.data.trigger_id);
   return msg ? { status: 200, reason: msg } : { status: 200 };
 }

@@ -24,7 +24,10 @@ const Payload = z.object({
   team: z.object({ id: z.string() }),
   user: z.object({ id: z.string() }),
   response_url: z.string().max(512).optional(),
-  actions: z.array(z.object({ action_id: z.string(), value: z.string().max(200) })).min(1).max(1),
+  actions: z
+    .array(z.object({ action_id: z.string(), value: z.string().max(200) }))
+    .min(1)
+    .max(1),
 });
 
 const APR_ID = /^apr_[A-Za-z0-9_-]{16,64}$/;
@@ -45,19 +48,30 @@ export type InteractionDeps = {
   replay: ReplayGuard;
   workflow: ApprovalDecider;
   /** Needed for the Submit button; absent means the button is not offered or honored. */
-  service?: ApprovalExecutionService;
-  notifier?: SlackApprovalNotifier;
-  commandName?: string;
-  nowSec?: number;
-  budgetMs?: number;
-  log?: IntakeLog;
+  service?: ApprovalExecutionService | undefined;
+  notifier?: SlackApprovalNotifier | undefined;
+  commandName?: string | undefined;
+  nowSec?: number | undefined;
+  budgetMs?: number | undefined;
+  log?: IntakeLog | undefined;
 };
 
-export async function handleApprovalAction(rawBody: string, headers: Record<string, string | undefined>, deps: InteractionDeps): Promise<DecisionOutcome> {
+export async function handleApprovalAction(
+  rawBody: string,
+  headers: Record<string, string | undefined>,
+  deps: InteractionDeps,
+): Promise<DecisionOutcome> {
   if (!deps.config.enabled) return { status: 403, ok: false, reason: "slack_disabled" };
-  if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes) return { status: 400, ok: false, reason: "body_too_large" };
+  if (Buffer.byteLength(rawBody) > deps.config.maxBodyBytes)
+    return { status: 400, ok: false, reason: "body_too_large" };
   try {
-    await verifySlackRequest({ rawBody, headers, signingSecret: deps.config.signingSecret, replay: deps.replay, nowSec: deps.nowSec });
+    await verifySlackRequest({
+      rawBody,
+      headers,
+      signingSecret: deps.config.signingSecret,
+      replay: deps.replay,
+      nowSec: deps.nowSec,
+    });
   } catch (e) {
     return { status: 401, ok: false, reason: e instanceof SlackVerificationError ? e.reason : "verify_failed" };
   }
@@ -79,15 +93,25 @@ export async function handleApprovalAction(rawBody: string, headers: Record<stri
     if (!APR_ID.test(action.value)) return { status: 400, ok: false, kind: "submit", reason: "bad_value" };
     const caller = await deps.identities.resolveSlack(p.team.id, p.user.id);
     if (!caller) return { status: 403, ok: false, kind: "submit", reason: "unlinked_user" };
-    const out = await submitFromSlack({ service: deps.service, commandName, budgetMs: budget, log: deps.log }, caller, action.value, (late) =>
-      deps.notifier?.replace(responseUrl, late.ok ? late.text : `${late.text} Run \`${commandName} submit ${action.value}\` to retry.`) ?? Promise.resolve(),
+    const out = await submitFromSlack(
+      { service: deps.service, commandName, budgetMs: budget, log: deps.log },
+      caller,
+      action.value,
+      (late) =>
+        deps.notifier?.replace(
+          responseUrl,
+          late.ok ? late.text : `${late.text} Run \`${commandName} submit ${action.value}\` to retry.`,
+        ) ?? Promise.resolve(),
     );
     // Success or "still running" replaces the button message; a fixable failure keeps the button.
-    await tell(out.ok ? deps.notifier?.replace(responseUrl, out.text) : deps.notifier?.ephemeral(responseUrl, out.text));
+    await tell(
+      out.ok ? deps.notifier?.replace(responseUrl, out.text) : deps.notifier?.ephemeral(responseUrl, out.text),
+    );
     return { status: 200, ok: out.ok, kind: "submit", text: out.text, ...(out.ok ? {} : { reason: "commit_failed" }) };
   }
 
-  const decision = action.action_id === APPROVE_ACTION ? "approve" : action.action_id === REJECT_ACTION ? "reject" : undefined;
+  const decision =
+    action.action_id === APPROVE_ACTION ? "approve" : action.action_id === REJECT_ACTION ? "reject" : undefined;
   if (!decision) return { status: 400, ok: false, reason: "unknown_action" };
   const [requestId, presentedHash] = action.value.split("|");
   if (!requestId || !presentedHash) return { status: 400, ok: false, reason: "bad_value" };

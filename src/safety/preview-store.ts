@@ -19,7 +19,7 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Short-lived preview tokens. Commit tools require a valid, unexpired token
- * that matches the calling user — human-in-the-loop gate.
+ * that matches the calling user, human-in-the-loop gate.
  */
 export type GenericPreviewPayload<T = unknown> = {
   kind: string;
@@ -53,7 +53,7 @@ export class PreviewStore {
       throw new Error("Preview token does not belong to the signed-in user.");
     }
     if (payload.kind !== kind) {
-      throw new Error(`Preview token is for '${payload.kind}', not '${kind}'.`);
+      throw new Error("Preview token kind does not match this commit.");
     }
     this.generic.delete(token);
     return payload as GenericPreviewPayload<T>;
@@ -68,7 +68,8 @@ export class PreviewStore {
   /** Read a preview without consuming it (same ownership/kind/expiry rules). */
   peek(token: string, userId: string, kind: PreviewPayload["kind"]): Readonly<PreviewPayload> | undefined {
     const payload = this.map.get(token);
-    if (!payload || payload.expiresAt < Date.now() || payload.userId !== userId || payload.kind !== kind) return undefined;
+    if (!payload || payload.expiresAt < Date.now() || payload.userId !== userId || payload.kind !== kind)
+      return undefined;
     return { ...payload, timeOffType: { ...payload.timeOffType } };
   }
 
@@ -85,7 +86,7 @@ export class PreviewStore {
       throw new Error("Preview token does not belong to the signed-in user.");
     }
     if (payload.kind !== kind) {
-      throw new Error(`Preview token is for '${payload.kind}', not '${kind}'.`);
+      throw new Error("Preview token kind does not match this commit.");
     }
     this.map.delete(token);
     return payload;

@@ -17,8 +17,10 @@ import { ApprovalError, type ApprovalRequest } from "./workflow.js";
 import type { BoundIdentity } from "../identity.js";
 import type { DbApprovalBackend } from "../../store/approvals.js";
 import type { WorkdayClient } from "../../workday/client.js";
-import { buildRequestTimeOffBody, ContractNotValidatedError, WorkdayApiError, WorkdayRequestValidationError } from "../../workday/client.js";
+import { buildRequestTimeOffBody, WorkdayApiError, WorkdayRequestValidationError } from "../../workday/client.js";
+import { classifyCommitFailure } from "../../safety/commit-outcome.js";
 import { LinkRequiredError, type AccessTokenProvider } from "../../auth/user-tokens.js";
+import { AbsenceTypeIdSchema } from "../../schemas/common.js";
 import type { TimeOffRequestInput } from "../../workday/types.js";
 import type { LogFn } from "../../observability/log.js";
 import type { Queryable } from "../../store/db.js";
@@ -26,8 +28,16 @@ import type { Queryable } from "../../store/db.js";
 export const COMMIT_TOOL = "commit_request_time_off";
 export const PREVIEW_TOOL = "preview_request_time_off";
 
-export type FormTimeOff = { startDate: string; endDate: string; timeOffType: string; quantity: number; comment?: string };
-export type AuthzResolver = (identity: BoundIdentity) => Promise<{ roles: readonly Role[]; assignments?: AssignmentStore }>;
+export type FormTimeOff = {
+  startDate: string;
+  endDate: string;
+  timeOffType: string;
+  quantity: number;
+  comment?: string | undefined;
+};
+export type AuthzResolver = (
+  identity: BoundIdentity,
+) => Promise<{ roles: readonly Role[]; assignments?: AssignmentStore }>;
 export type TimeOffTypeMap = Record<string, { type: "Time_Off_Type_ID" | "Absence_Table_ID" | "WID"; value: string }>;
 
 export class ApprovalExecutionService {
@@ -42,17 +52,18 @@ export class ApprovalExecutionService {
        * propose does not refresh the token; the refresh happens at commit, off the ack path.
        * When absent, propose resolves a usable access token (may call the token endpoint).
        */
-      linked?: (userId: string) => Promise<boolean>;
+      linked?: ((userId: string) => Promise<boolean>) | undefined;
       authzFor: AuthzResolver;
       typeMap: TimeOffTypeMap;
       /** Operations required for a commit; checked before any state change. */
-      assertCommitContract?: () => void;
-      log?: LogFn;
+      assertCommitContract?: (() => void) | undefined;
+      log?: LogFn | undefined;
     },
   ) {}
 
   private assertTenant(identity: BoundIdentity): void {
-    if (identity.tenantId !== this.d.tenantId) throw new ApprovalError("CROSS_TENANT", "Identity tenant does not match this deployment's Workday tenant.");
+    if (identity.tenantId !== this.d.tenantId)
+      throw new ApprovalError("CROSS_TENANT", "Identity tenant does not match this deployment's Workday tenant.");
   }
 
   /**
@@ -61,11 +72,19 @@ export class ApprovalExecutionService {
    * form session, so a fixable error keeps the form open. Throws ApprovalError / RbacDeniedError
    * / LinkRequiredError / TokenRefreshUnavailableError.
    */
-  async checkTimeOff(requester: BoundIdentity, form: FormTimeOff): Promise<{ authz: Awaited<ReturnType<AuthzResolver>>; willSubmit: TimeOffRequestInput }> {
+  async checkTimeOff(
+    requester: BoundIdentity,
+    form: FormTimeOff,
+  ): Promise<{ authz: Awaited<ReturnType<AuthzResolver>>; willSubmit: TimeOffRequestInput }> {
     this.assertTenant(requester);
     const authz = await this.d.authzFor(requester);
     for (const toolName of [PREVIEW_TOOL, COMMIT_TOOL]) {
-      assertToolAllowedForUser({ userId: requester.userId, roles: authz.roles, toolName, assignments: authz.assignments });
+      assertToolAllowedForUser({
+        userId: requester.userId,
+        roles: authz.roles,
+        toolName,
+        assignments: authz.assignments,
+      });
     }
     const type = this.d.typeMap[form.timeOffType];
     if (!type) throw new ApprovalError("UNKNOWN_TYPE", "Time-off type is not mapped for this tenant.");
@@ -75,7 +94,7 @@ export class ApprovalExecutionService {
       endDate: form.endDate,
       unit: "DAYS",
       quantity: form.quantity,
-      timeOffType: { ...type },
+      timeOffType: AbsenceTypeIdSchema.parse(type),
       ...(form.comment ? { comment: form.comment } : {}),
     };
     // Reject payloads Workday cannot accept now, not after an approver has spent time on them.
@@ -141,21 +160,28 @@ export class ApprovalExecutionService {
       this.d.log?.({ evt: "approval.committed", req: req.id, reused: Boolean(existing) });
       return body;
     } catch (e) {
-      const definitive =
-        e instanceof ContractNotValidatedError ||
-        (e instanceof WorkdayApiError && e.status >= 400 && e.status < 500 && ![408, 409, 429].includes(e.status)) ||
-        e instanceof WorkdayRequestValidationError;
-      const state = definitive ? "error" : "unknown";
-      await this.d.backend.finishCommit(req.id, { state, body: { error: e instanceof WorkdayApiError ? e.fault.code : e instanceof Error ? e.name : "error" } });
+      const state = classifyCommitFailure(e);
+      await this.d.backend.finishCommit(req.id, {
+        state,
+        body: { error: e instanceof WorkdayApiError ? e.fault.code : e instanceof Error ? e.name : "error" },
+      });
       this.d.log?.({ evt: "approval.commit_failed", req: req.id, state });
-      if (state === "unknown") throw new ApprovalError("COMMIT_UNCERTAIN", "Workday did not confirm the result. It will not be resubmitted automatically; an operator will reconcile.");
+      if (state === "unknown")
+        throw new ApprovalError(
+          "COMMIT_UNCERTAIN",
+          "Workday did not confirm the result. It will not be resubmitted automatically; an operator will reconcile.",
+        );
       throw e;
     }
   }
 
   async status(caller: BoundIdentity, requestId: string): Promise<{ status: string; summary: string }> {
     const r = await this.d.backend.get(requestId);
-    if (!r || r.tenantId !== caller.tenantId || (r.requesterUserId !== caller.userId && !r.assignedApprovers.includes(caller.userId))) {
+    if (
+      !r ||
+      r.tenantId !== caller.tenantId ||
+      (r.requesterUserId !== caller.userId && !r.assignedApprovers.includes(caller.userId))
+    ) {
       throw new ApprovalError("NOT_FOUND", "Unknown approval request.");
     }
     return { status: r.status, summary: r.summary };
@@ -173,11 +199,17 @@ export class ApprovalExecutionService {
     const token = await this.d.accessToken(req.requesterUserId);
     const found = await this.d.client.findMatchingTimeOffRequest(token, input);
     if (found) {
-      await this.d.backend.resolveUncertain(actor, requestId, { state: "ok", body: { submitted: true, reconciled: true, request: found } });
+      await this.d.backend.resolveUncertain(actor, requestId, {
+        state: "ok",
+        body: { submitted: true, reconciled: true, request: found },
+      });
       return "committed";
     }
     if (confirmNotSubmitted) {
-      await this.d.backend.resolveUncertain(actor, requestId, { state: "error", body: { error: "NOT_SUBMITTED_CONFIRMED" } });
+      await this.d.backend.resolveUncertain(actor, requestId, {
+        state: "error",
+        body: { error: "NOT_SUBMITTED_CONFIRMED" },
+      });
       return "failed";
     }
     return "still_unknown";
@@ -193,7 +225,8 @@ export function parseTypeMap(raw: string | undefined): TimeOffTypeMap {
   const out: TimeOffTypeMap = {};
   for (const [k, x] of Object.entries(v)) {
     if (!["vacation", "sick", "personal"].includes(k)) throw new Error(`Unknown form type ${k}`);
-    if (!x.value || !["Time_Off_Type_ID", "Absence_Table_ID", "WID"].includes(String(x.type))) throw new Error(`Bad type map entry ${k}`);
+    if (!x.value || !["Time_Off_Type_ID", "Absence_Table_ID", "WID"].includes(String(x.type)))
+      throw new Error(`Bad type map entry ${k}`);
     out[k] = { type: x.type as TimeOffTypeMap[string]["type"], value: x.value };
   }
   return out;

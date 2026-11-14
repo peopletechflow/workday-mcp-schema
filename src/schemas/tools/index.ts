@@ -5,3 +5,4 @@ export * from "./benefits.js";
 export * from "./payroll.js";
 export * from "./org.js";
 export * from "./agent-ready.js";
+export * from "./outcomes.js";

@@ -4,7 +4,7 @@
  * Workday exposes no dedicated manager-chain or indirect-reports endpoint, so these recipes
  * compose native Basic tools. They are pure traversal logic over an injected adapter: the
  * adapter binds each step to a live Workday MCP call (as the end user / ASU) after the live
- * schema is discovered. Response field shapes are NOT pinned here on purpose — native tools
+ * schema is discovered. Response field shapes are NOT pinned here on purpose, native tools
  * are unversioned, so field extraction lives in the adapter.
  *
  * Not registered as a Layer-3 MCP tool yet (no live adapter); RBAC for each recipe is the
@@ -36,7 +36,7 @@ export const AGENT_READY_RECIPES = {
     steps: [
       'find_staffing_workers(contextInstanceId = start WID or "me") -> primarySupervisoryOrganization.',
       "find_staffing_supervisory_organization(org) -> manager.",
-      "If the manager is the current worker (worker manages their own org), move to the superior org; the adapter decides how — otherwise stop.",
+      "If the manager is the current worker (worker manages their own org), move to the superior org; the adapter decides how, otherwise stop.",
       "Append manager, repeat from step 1 with the manager as the worker.",
       `Stop on: no org, no manager, a repeated worker (cycle), or ${MANAGER_CHAIN_MAX_HOPS} hops (truncated=true).`,
     ],
@@ -49,7 +49,7 @@ export const AGENT_READY_RECIPES = {
     readOnly: true,
     tools: ["list_worker_direct_reports"],
     steps: [
-      "list_worker_direct_reports(manager) — page through limit/offset until total is reached.",
+      "list_worker_direct_reports(manager), page through limit/offset until total is reached.",
       "For each report with hasManagerRole=true, recurse with that report as the manager.",
       `Stop at depth ${INDIRECT_REPORTS_MAX_DEPTH} (truncated=true) and never revisit a worker (cycle guard).`,
     ],

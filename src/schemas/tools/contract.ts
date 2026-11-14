@@ -30,7 +30,7 @@ export const CommitInputShape = {
 };
 
 /** Common preview_* output envelope; `willSubmit` is specialized per tool. */
-export function previewOutput<W extends z.ZodTypeAny>(willSubmit: W) {
+export function previewOutput<W extends z.ZodType>(willSubmit: W) {
   return {
     previewToken: PreviewTokenSchema,
     expiresInSeconds: z.number().int().positive(),
@@ -41,7 +41,7 @@ export function previewOutput<W extends z.ZodTypeAny>(willSubmit: W) {
 }
 
 /** Common commit_* output envelope; `result` is specialized per tool. */
-export function commitOutput<R extends z.ZodTypeAny>(result: R) {
+export function commitOutput<R extends z.ZodType>(result: R) {
   return {
     replayed: z.boolean(),
     submitted: z.boolean(),

@@ -70,7 +70,7 @@ export function allAgentReadyTools(): readonly AgentReadyToolDefinition[] {
 
 /** Banner text for responses so clients never confuse catalog stubs with live Workday calls. */
 export const NATIVE_TOOL_DISCLAIMER =
-  "NATIVE WORKDAY AGENT-READY TOOL — documented in this catalog only. " +
+  "NATIVE WORKDAY AGENT-READY TOOL, documented in this catalog only. " +
   "Not implemented by workday-mcp-schema. Discover live schemas on Workday MCP " +
   "(https://{region}.agent.workday.com/{tenant}/mcp) after ASOR registration. " +
   "Catalog may be incomplete; refresh via scripts/sync-agent-ready-catalog.ts.";

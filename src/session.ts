@@ -58,11 +58,7 @@ export async function requireUserAccessToken(
  * Dev helper: when using fixtures, seed a short-lived fake token so tools
  * are exercisable without a live OAuth dance.
  */
-export async function ensureFixtureSession(
-  config: AppConfig,
-  tokenStore: TokenStore,
-  userId: string,
-): Promise<void> {
+export async function ensureFixtureSession(config: AppConfig, tokenStore: TokenStore, userId: string): Promise<void> {
   if (!config.useFixtures) return;
   const existing = await tokenStore.get(userId);
   if (existing && existing.expiresAt > Date.now()) return;

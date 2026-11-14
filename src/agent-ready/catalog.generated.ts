@@ -1,5 +1,5 @@
 /**
- * GENERATED / MAINTAINED SEED — do not hand-edit large diffs.
+ * GENERATED / MAINTAINED SEED, do not hand-edit large diffs.
  * Regenerate with: pnpm exec tsx scripts/sync-agent-ready-catalog.ts --csv <path> [--asor <path>]
  * or merge ASOR JSON dumps the same way.
  *
@@ -43,7 +43,7 @@ export const AGENT_READY_CATALOG: AgentReadyCatalog = {
       kind: "advanced",
       operationType: "CREATE",
       productArea: "Workforce / Personal Data",
-      description: "Create Worker Preferred Name Change MCP — submits a preferred name change for a worker.",
+      description: "Create Worker Preferred Name Change MCP, submits a preferred name change for a worker.",
       requiredPromptTools: [
         "list_hereditary_name_suffixes",
         "list_name_salutations",
@@ -58,7 +58,8 @@ export const AGENT_READY_CATALOG: AgentReadyCatalog = {
       kind: "prompt",
       operationType: "VIEW",
       productArea: "Workforce / Personal Data",
-      description: "List Hereditary Name Suffixes Prompt — supplies valid hereditary suffix WIDs for preferred name change.",
+      description:
+        "List Hereditary Name Suffixes Prompt, supplies valid hereditary suffix WIDs for preferred name change.",
       source: "docs:Agent-Ready MCP Prompt Tools",
     },
     {
@@ -67,7 +68,7 @@ export const AGENT_READY_CATALOG: AgentReadyCatalog = {
       kind: "prompt",
       operationType: "VIEW",
       productArea: "Workforce / Personal Data",
-      description: "List Name Salutation — supplies valid salutation WIDs for preferred name change.",
+      description: "List Name Salutation, supplies valid salutation WIDs for preferred name change.",
       source: "docs:Agent-Ready MCP Prompt Tools",
     },
     {
@@ -76,7 +77,7 @@ export const AGENT_READY_CATALOG: AgentReadyCatalog = {
       kind: "prompt",
       operationType: "VIEW",
       productArea: "Workforce / Personal Data",
-      description: "List Social Name Suffixes Prompt — supplies valid social suffix WIDs for preferred name change.",
+      description: "List Social Name Suffixes Prompt, supplies valid social suffix WIDs for preferred name change.",
       source: "docs:Agent-Ready MCP Prompt Tools",
     },
     {
@@ -85,7 +86,7 @@ export const AGENT_READY_CATALOG: AgentReadyCatalog = {
       kind: "prompt",
       operationType: "VIEW",
       productArea: "Workforce / Personal Data",
-      description: "List Name Titles — supplies valid title WIDs for preferred name change.",
+      description: "List Name Titles, supplies valid title WIDs for preferred name change.",
       source: "docs:Agent-Ready MCP Prompt Tools",
     },
   ],

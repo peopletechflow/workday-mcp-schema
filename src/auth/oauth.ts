@@ -1,12 +1,25 @@
 import { createHash, randomBytes } from "node:crypto";
+import { z } from "zod";
 import type { AppConfig } from "../config.js";
+
+const TokenResponseSchema = z.object({
+  access_token: z.string().min(1).max(8192),
+  refresh_token: z.string().min(1).max(8192).optional(),
+  expires_in: z
+    .number()
+    .positive()
+    .max(60 * 60 * 24 * 366)
+    .optional(),
+  token_type: z.string().min(1).max(64).optional(),
+  scope: z.string().max(2048).optional(),
+});
 
 export type OAuthTokens = {
   accessToken: string;
-  refreshToken?: string;
+  refreshToken?: string | undefined;
   expiresAt: number;
   tokenType: string;
-  scope?: string;
+  scope?: string | undefined;
 };
 
 export type PkcePair = {
@@ -27,7 +40,11 @@ export const OAUTH_HTTP_TIMEOUT_MS = 15_000;
  * sign in again. Otherwise (5xx, 429, network error, timeout) the token may still be valid.
  */
 export class OAuthTokenError extends Error {
-  constructor(readonly status: number | undefined, readonly definitive: boolean, message: string) {
+  constructor(
+    readonly status: number | undefined,
+    readonly definitive: boolean,
+    message: string,
+  ) {
     super(message);
     this.name = "OAuthTokenError";
   }
@@ -53,7 +70,7 @@ export function takePkce(pending: Map<string, PkcePair>, state: string, now = Da
 
 /**
  * Per-user OAuth 2.0 authorization code + PKCE helpers.
- * No shared service-account fallback — missing token means sign-in required.
+ * No shared service-account fallback, missing token means sign-in required.
  */
 export function createPkcePair(): PkcePair {
   const codeVerifier = randomBytes(32).toString("base64url");
@@ -79,7 +96,7 @@ async function postTokenEndpoint(
   body: URLSearchParams,
   fetchImpl: typeof fetch,
   what: string,
-): Promise<Record<string, unknown>> {
+): Promise<z.infer<typeof TokenResponseSchema>> {
   let res: Response;
   try {
     res = await fetchImpl(config.oauthTokenUrl, {
@@ -98,7 +115,10 @@ async function postTokenEndpoint(
     const definitive = res.status === 400 || res.status === 401;
     throw new OAuthTokenError(res.status, definitive, `${what} failed: HTTP ${res.status}.`);
   }
-  return (await res.json()) as Record<string, unknown>;
+  const parsed = TokenResponseSchema.safeParse(await res.json());
+  if (!parsed.success)
+    throw new OAuthTokenError(res.status, false, `${what} failed: token response did not match the expected shape.`);
+  return parsed.data;
 }
 
 export async function exchangeAuthorizationCode(
@@ -136,22 +156,18 @@ export async function refreshAccessToken(
   return tokens;
 }
 
-function normalizeTokenResponse(json: Record<string, unknown>): OAuthTokens {
-  const accessToken = String(json.access_token ?? "");
-  if (!accessToken) {
-    throw new Error("OAuth response missing access_token");
-  }
-  const expiresIn = Number(json.expires_in ?? 3600);
+function normalizeTokenResponse(json: z.infer<typeof TokenResponseSchema>): OAuthTokens {
+  const expiresIn = json.expires_in ?? 3600;
   return {
-    accessToken,
-    refreshToken: json.refresh_token ? String(json.refresh_token) : undefined,
+    accessToken: json.access_token,
+    ...(json.refresh_token ? { refreshToken: json.refresh_token } : {}),
     expiresAt: Date.now() + expiresIn * 1000,
-    tokenType: String(json.token_type ?? "Bearer"),
-    scope: json.scope ? String(json.scope) : undefined,
+    tokenType: json.token_type ?? "Bearer",
+    ...(json.scope ? { scope: json.scope } : {}),
   };
 }
 
-/** Thrown when the caller has no usable token — MCP clients should prompt sign-in. */
+/** Thrown when the caller has no usable token, MCP clients should prompt sign-in. */
 export class SignInRequiredError extends Error {
   readonly authorizeUrl: string;
 

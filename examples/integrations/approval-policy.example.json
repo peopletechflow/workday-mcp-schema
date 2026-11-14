@@ -1,3 +1,9 @@
 [
-  { "tenantId": "sandbox_tenant", "commitTool": "commit_request_time_off", "approverUserIds": ["manager1", "hr1"], "allowSelfApproval": false, "rotate": false }
+  {
+    "tenantId": "sandbox_tenant",
+    "commitTool": "commit_request_time_off",
+    "approverUserIds": ["manager1", "hr1"],
+    "allowSelfApproval": false,
+    "rotate": false
+  }
 ]

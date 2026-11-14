@@ -3,7 +3,7 @@
  *
  * Kept separate from TOOL_PERMISSIONS (which must match this server's own registered tools
  * 1:1). Applied by the agent/skill layer and by Layer-3 adapters before calling Workday MCP.
- * Coarse pre-filter only — Workday security on the token decides.
+ * Coarse pre-filter only, Workday security on the token decides.
  *
  * Scopes:
  *   self             target must be "me" or the caller's own WID
@@ -22,7 +22,7 @@
  * src/safety/native-write-guard.ts after preview + explicit confirm. Self-service writes are
  * "self" for every role; manager-actions writes follow team / org scope.
  * Business-process step actions (approve/deny) additionally require the caller to be the
- * step's awaiting approver (`awaitingApproverWid`, supplied by caller code — like payslip ownership).
+ * step's awaiting approver (`awaitingApproverWid`, supplied by caller code, like payslip ownership).
  * request_payroll_input additionally requires `payrollDomain: true` (Workday payroll domain).
  * payroll-viewer-skill is read-only. Payslips: own for every role, payroll_viewer also workers in
  * its pay group(s) (WorkerPayGroupProof, else targetInScope), admin all. Next payment date,
@@ -35,7 +35,12 @@ import type { Role } from "./roles.js";
 import { RbacDeniedError } from "./enforce.js";
 import { isInVerifiedTeam, type TeamScope } from "./team-scope.js";
 import { isOrgInScope, isValidOrgScope, isWorkerInOrgScope, type OrgScope, type WorkerOrgProof } from "./org-scope.js";
-import { isPayGroupListed, isWorkerInPayGroupScope, type PayGroupSession, type WorkerPayGroupProof } from "./pay-group-scope.js";
+import {
+  isPayGroupListed,
+  isWorkerInPayGroupScope,
+  type PayGroupSession,
+  type WorkerPayGroupProof,
+} from "./pay-group-scope.js";
 import {
   ADMIN_LOOKUP_TOOLS,
   ADMIN_SKILL_TOOLS,
@@ -44,13 +49,7 @@ import {
   PAYSLIP_TOOLS,
 } from "../agent-ready/catalog.tenant.js";
 
-export type AgentReadyScope =
-  | "self"
-  | "actor_self"
-  | "self_and_reports"
-  | "supervisory_org"
-  | "pay_group"
-  | "all";
+export type AgentReadyScope = "self" | "actor_self" | "self_and_reports" | "supervisory_org" | "pay_group" | "all";
 export type AgentReadyGrant = Partial<Record<Role, AgentReadyScope>>;
 
 // ---- worker-data-skill (read-only) ----
@@ -64,7 +63,12 @@ const WD = (worker: boolean, manager: boolean): AgentReadyGrant => ({
 
 // ---- self-service-skill: manager is self-only (own data), never others' ----
 /** Time off, inbox, learning, goals: hr_partner reads within org scope. */
-const SS_ORG_READ: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "supervisory_org", admin: "all" };
+const SS_ORG_READ: AgentReadyGrant = {
+  worker_self: "self",
+  manager: "self",
+  hr_partner: "supervisory_org",
+  admin: "all",
+};
 /** Time off reads shared with manager-actions-skill: manager also on verified team. */
 const SS_TEAM_TIME_OFF: AgentReadyGrant = { ...SS_ORG_READ, manager: "self_and_reports" };
 /**
@@ -73,12 +77,24 @@ const SS_TEAM_TIME_OFF: AgentReadyGrant = { ...SS_ORG_READ, manager: "self_and_r
  * Caveat: Workday's native payslip tools are self-service server-side, so the tenant still only
  * returns the caller's own payslips until a payroll-admin data source / Custom Agent Action exists.
  */
-const PAYSLIP_READ: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "self", payroll_viewer: "pay_group", admin: "all" };
+const PAYSLIP_READ: AgentReadyGrant = {
+  worker_self: "self",
+  manager: "self",
+  hr_partner: "self",
+  payroll_viewer: "pay_group",
+  admin: "all",
+};
 /**
  * Other own-pay tools (payroll-viewer-skill): self-only for EVERY role, admin included. The
  * server refuses any worker id other than the caller's before the call.
  */
-const PV_SELF_ONLY: AgentReadyGrant = { worker_self: "self", manager: "self", hr_partner: "self", payroll_viewer: "self", admin: "self" };
+const PV_SELF_ONLY: AgentReadyGrant = {
+  worker_self: "self",
+  manager: "self",
+  hr_partner: "self",
+  payroll_viewer: "self",
+  admin: "self",
+};
 /** Benefits enrollment, dependents, legal name, personal-info events: self + admin only. */
 const SS_SELF_READ: AgentReadyGrant = { worker_self: "self", manager: "self", admin: "all" };
 /** Writes: self only for every role that may write; hr_partner/payroll_viewer never write. */
@@ -172,17 +188,30 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   ...Object.fromEntries(
     [
       "list_staffing_business_process_types",
-      "find_expense_reports", "find_expense_lines",
-      "find_workers_to_initiate_change_job", "find_change_job_templates", "find_job_profiles_for_change_job",
-      "find_locations_for_change_job", "find_supervisory_organizations_for_change_job", "find_reasons_for_change_job",
+      "find_expense_reports",
+      "find_expense_lines",
+      "find_workers_to_initiate_change_job",
+      "find_change_job_templates",
+      "find_job_profiles_for_change_job",
+      "find_locations_for_change_job",
+      "find_supervisory_organizations_for_change_job",
+      "find_reasons_for_change_job",
       "find_employee_types_for_change_job",
       "find_worker_history_events",
-      "list_job_requisition_supervisory_organizations", "list_job_requisition_statuses", "list_job_requisition_types",
-      "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
-      "list_my_candidate_candidate_stages", "list_my_candidate_job_profiles", "list_my_candidate_candidate_types",
+      "list_job_requisition_supervisory_organizations",
+      "list_job_requisition_statuses",
+      "list_job_requisition_types",
+      "find_job_requisitions",
+      "find_in_progress_create_job_requisition_events",
+      "find_my_candidates",
+      "list_my_candidate_candidate_stages",
+      "list_my_candidate_job_profiles",
+      "list_my_candidate_candidate_types",
       "list_my_candidate_job_families",
-      "find_performance_review", "find_worker_from_my_team_to_filter_performance_review",
-      "list_workers_for_initiate_performance_review", "find_worker_performance_review_template",
+      "find_performance_review",
+      "find_worker_from_my_team_to_filter_performance_review",
+      "list_workers_for_initiate_performance_review",
+      "find_worker_performance_review_template",
       "find_worker_anytime_feedback_received",
       "list_my_teams_learning_records",
     ].map((n) => [n, MA_READ]),
@@ -221,8 +250,15 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   request_worker_leave_of_absence: HR_SELF_OR_ORG_WRITE,
   ...Object.fromEntries(
     [
-      "create_passport_ids", "update_passport_ids", "create_visa_ids", "update_visa_ids", "submit_passport_and_visa_changes",
-      "create_national_ids", "update_national_ids", "create_government_ids", "update_government_ids",
+      "create_passport_ids",
+      "update_passport_ids",
+      "create_visa_ids",
+      "update_visa_ids",
+      "submit_passport_and_visa_changes",
+      "create_national_ids",
+      "update_national_ids",
+      "create_government_ids",
+      "update_government_ids",
       "submit_government_identifier_changes",
     ].map((n) => [n, HR_SELF_OR_ORG_WRITE]),
   ),
@@ -237,7 +273,7 @@ export const AGENT_READY_TOOL_PERMISSIONS: Readonly<Record<string, AgentReadyGra
   find_payroll_inputs: PV_PAY_GROUP_READ, // sensitive
   payroll_input_types_prompt: PV_PAY_GROUP_READ,
 
-  // admin-skill (92 tools: 71 shared keep their grants above — admin "all" on reads except the 7
+  // admin-skill (92 tools: 71 shared keep their grants above, admin "all" on reads except the 7
   // self-only own-pay tools, "self" on the 12 self-service writes; 21 new reads: admin only, "all").
   // Responses pass src/safety/sensitive-fields.ts; multi-worker demographics go through
   // src/safety/diversity.ts. No compensation / termination / hire / org / security / job-change write.
@@ -275,26 +311,49 @@ const SCOPE_RANK: Record<AgentReadyScope, number> = {
 export type AgentReadyTarget = "worker" | "none" | "caller_list" | "org" | "pay_group";
 
 const NONE_TARGET = [
-  "list_organizations", "get_learning_content", "find_goal_status",
+  "list_organizations",
+  "get_learning_content",
+  "find_goal_status",
   "list_staffing_business_process_types",
-  "find_change_job_templates", "find_job_profiles_for_change_job", "find_locations_for_change_job",
-  "find_supervisory_organizations_for_change_job", "find_reasons_for_change_job", "find_employee_types_for_change_job",
-  "list_job_requisition_supervisory_organizations", "list_job_requisition_statuses", "list_job_requisition_types",
-  "list_my_candidate_candidate_stages", "list_my_candidate_job_profiles", "list_my_candidate_candidate_types",
-  "list_my_candidate_job_families", "find_worker_performance_review_template",
-  "list_request_payroll_input_pay_components", "list_request_payroll_input_event_input_types_for_pay_component",
-  "list_leave_event_statuses", "list_time_off_entry_statuses", "find_ethnicity", "find_ethnicity_details",
+  "find_change_job_templates",
+  "find_job_profiles_for_change_job",
+  "find_locations_for_change_job",
+  "find_supervisory_organizations_for_change_job",
+  "find_reasons_for_change_job",
+  "find_employee_types_for_change_job",
+  "list_job_requisition_supervisory_organizations",
+  "list_job_requisition_statuses",
+  "list_job_requisition_types",
+  "list_my_candidate_candidate_stages",
+  "list_my_candidate_job_profiles",
+  "list_my_candidate_candidate_types",
+  "list_my_candidate_job_families",
+  "find_worker_performance_review_template",
+  "list_request_payroll_input_pay_components",
+  "list_request_payroll_input_event_input_types_for_pay_component",
+  "list_leave_event_statuses",
+  "list_time_off_entry_statuses",
+  "find_ethnicity",
+  "find_ethnicity_details",
   "payroll_input_types_prompt",
   ...ADMIN_LOOKUP_TOOLS,
 ];
 const ORG_TARGET = [
-  "get_org_chart_children", "get_org_chart_parent", "list_organization_members", "aggregate_diversity",
+  "get_org_chart_children",
+  "get_org_chart_parent",
+  "list_organization_members",
+  "aggregate_diversity",
   "find_org_chart_navigable",
 ];
 const CALLER_LIST_TARGET = [
-  "find_workers_to_initiate_change_job", "find_worker_from_my_team_to_filter_performance_review",
-  "list_workers_for_initiate_performance_review", "list_my_teams_learning_records", "list_request_payroll_input_workers",
-  "find_job_requisitions", "find_in_progress_create_job_requisition_events", "find_my_candidates",
+  "find_workers_to_initiate_change_job",
+  "find_worker_from_my_team_to_filter_performance_review",
+  "list_workers_for_initiate_performance_review",
+  "list_my_teams_learning_records",
+  "list_request_payroll_input_workers",
+  "find_job_requisitions",
+  "find_in_progress_create_job_requisition_events",
+  "find_my_candidates",
   "find_org_chart_organizations",
   "find_feedback_events_awaiting_me",
 ];
@@ -310,12 +369,26 @@ export const AGENT_READY_TOOL_TARGETS: Readonly<Record<string, AgentReadyTarget>
  * src/rbac/org-scope.ts (OrgScope / WorkerOrgProof). A bare `targetInScope: true` is refused.
  */
 export const ORG_PROOF_REQUIRED: ReadonlySet<string> = new Set([
-  "find_org_chart_organizations", "get_org_chart_children", "get_org_chart_parent", "list_organization_members",
-  "list_leave_event_statuses", "list_time_off_entry_statuses", "list_onboarding_business_process_tasks",
-  "list_worker_history_events", "find_ethnicity", "find_ethnicity_details",
+  "find_org_chart_organizations",
+  "get_org_chart_children",
+  "get_org_chart_parent",
+  "list_organization_members",
+  "list_leave_event_statuses",
+  "list_time_off_entry_statuses",
+  "list_onboarding_business_process_tasks",
+  "list_worker_history_events",
+  "find_ethnicity",
+  "find_ethnicity_details",
   "request_worker_leave_of_absence",
-  "create_passport_ids", "update_passport_ids", "create_visa_ids", "update_visa_ids", "submit_passport_and_visa_changes",
-  "create_national_ids", "update_national_ids", "create_government_ids", "update_government_ids",
+  "create_passport_ids",
+  "update_passport_ids",
+  "create_visa_ids",
+  "update_visa_ids",
+  "submit_passport_and_visa_changes",
+  "create_national_ids",
+  "update_national_ids",
+  "create_government_ids",
+  "update_government_ids",
   "submit_government_identifier_changes",
   "aggregate_diversity",
 ]);
@@ -358,40 +431,40 @@ export type AgentReadyCallContext = {
   /**
    * Worker the call targets: "me", a worker WID, or undefined when the tool has no worker
    * target. For tools keyed by another WID (payslip, event, step, entry, task), pass the OWNING
-   * / SUBJECT worker here — caller code must resolve ownership before calling.
+   * / SUBJECT worker here, caller code must resolve ownership before calling.
    */
-  contextInstanceId?: string;
+  contextInstanceId?: string | undefined;
   /** Caller's own worker WID, when resolved. Required for verified-team access. */
-  callerWid?: string;
+  callerWid?: string | undefined;
   /**
    * Result of the runtime scope check for non-self targets for org / pay-group scopes
    * (hr_partner, payroll_viewer). undefined = not checked -> non-self denied.
    * NOT accepted for manager scope: managers need `teamScope`.
    */
-  targetInScope?: boolean;
+  targetInScope?: boolean | undefined;
   /** Verified team (src/rbac/team-scope.ts verifyTeamScope) for manager self_and_reports access. */
-  teamScope?: TeamScope;
+  teamScope?: TeamScope | undefined;
   /** Verified org scope (src/rbac/org-scope.ts verifyOrgScope): hr_partner orgs, or a manager's team orgs. */
-  orgScope?: OrgScope;
+  orgScope?: OrgScope | undefined;
   /** Per-worker org proof (verifyWorkerInOrgScope) for hr_partner actions on a worker. */
-  workerOrgProof?: WorkerOrgProof;
+  workerOrgProof?: WorkerOrgProof | undefined;
   /**
    * Pay-group tools: the pay group or pay group detail WID the call targets (falls back to
    * contextInstanceId). Omit only when listing.
    */
-  payGroupId?: string;
+  payGroupId?: string | undefined;
   /** Pay groups listed earlier in this session (src/rbac/pay-group-scope.ts openPayGroupSession). */
-  payGroupSession?: PayGroupSession;
+  payGroupSession?: PayGroupSession | undefined;
   /** Conversation/session id the PayGroupSession must be bound to. */
-  sessionId?: string;
+  sessionId?: string | undefined;
   /** payroll_viewer worker targets (payslips): verifyWorkerInPayGroupScope proof for contextInstanceId. */
-  workerPayGroupProof?: WorkerPayGroupProof;
+  workerPayGroupProof?: WorkerPayGroupProof | undefined;
   /** BP step tools: the worker the step is awaiting (from find_business_process_event_step / tasks). */
-  awaitingApproverWid?: string;
+  awaitingApproverWid?: string | undefined;
   /** Caller holds the Workday payroll domain (required for request_payroll_input). */
-  payrollDomain?: boolean;
+  payrollDomain?: boolean | undefined;
   /** Set only by src/safety/native-write-guard.ts after a consumed preview + userConfirmed. */
-  previewConfirmed?: boolean;
+  previewConfirmed?: boolean | undefined;
 };
 
 export function grantsFor(name: string): AgentReadyGrant | undefined {
@@ -452,7 +525,8 @@ function permits(scope: AgentReadyScope, name: string, write: boolean, ctx: Agen
     return scope !== "actor_self";
   }
   const self =
-    isSelfTarget(ctx) || (BP_STEP_TOOLS.has(name) && !BP_STEP_ACTIONS.has(name) && isSelfId(ctx.awaitingApproverWid, ctx.callerWid));
+    isSelfTarget(ctx) ||
+    (BP_STEP_TOOLS.has(name) && !BP_STEP_ACTIONS.has(name) && isSelfId(ctx.awaitingApproverWid, ctx.callerWid));
   switch (scope) {
     case "all":
       return true;

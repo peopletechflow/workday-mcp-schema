@@ -4,8 +4,19 @@ import { createPgDb, type Db, type Queryable, type Row } from "../../src/store/d
 
 export async function pgliteDb(): Promise<Db> {
   const pg = await PGlite.create();
-  const run = async <T extends Row>(q: { query: PGlite["query"]; exec: PGlite["exec"] }, sql: string, params: unknown[] = []) => {
-    if (!params.length && sql.includes(";") && sql.trim().split(";").filter((s) => s.trim()).length > 1) {
+  const run = async <T extends Row>(
+    q: { query: PGlite["query"]; exec: PGlite["exec"] },
+    sql: string,
+    params: unknown[] = [],
+  ) => {
+    if (
+      !params.length &&
+      sql.includes(";") &&
+      sql
+        .trim()
+        .split(";")
+        .filter((s) => s.trim()).length > 1
+    ) {
       await q.exec(sql);
       return { rows: [] as T[], rowCount: 0 };
     }
@@ -15,7 +26,9 @@ export async function pgliteDb(): Promise<Db> {
   return {
     query: <T extends Row>(sql: string, params?: unknown[]) => run<T>(pg, sql, params),
     tx: <T>(fn: (q: Queryable) => Promise<T>) =>
-      pg.transaction(async (tx) => fn({ query: <R extends Row>(sql: string, params?: unknown[]) => run<R>(tx as unknown as PGlite, sql, params) })),
+      pg.transaction(async (tx) =>
+        fn({ query: <R extends Row>(sql: string, params?: unknown[]) => run<R>(tx as unknown as PGlite, sql, params) }),
+      ),
     close: () => pg.close(),
   };
 }

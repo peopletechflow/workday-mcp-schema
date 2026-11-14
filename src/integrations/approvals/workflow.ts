@@ -19,17 +19,21 @@ import { z } from "zod";
 import type { Role } from "../../rbac/roles.js";
 import type { AssignmentStore } from "../../rbac/assignments.js";
 import { assertToolAllowedForUser } from "../../rbac/user-enforce.js";
-import { TOOL_REGISTRY } from "../../tools/registry.js";
+import { isCommitTool } from "../../tools/registry.js";
 import type { BoundIdentity } from "../identity.js";
 
 export class ApprovalError extends Error {
-  constructor(public readonly code: string, message: string) {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
     super(message);
     this.name = "ApprovalError";
   }
 }
 
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "committing" | "committed" | "failed" | "unknown";
+export type ApprovalStatus =
+  "pending" | "approved" | "rejected" | "expired" | "committing" | "committed" | "failed" | "unknown";
 
 export type ApprovalRequest = {
   id: string;
@@ -44,8 +48,8 @@ export type ApprovalRequest = {
   createdAt: number;
   expiresAt: number;
   assignedApprovers: string[];
-  decidedBy?: string;
-  decidedAt?: number;
+  decidedBy?: string | undefined;
+  decidedAt?: number | undefined;
   result?: unknown;
   source: "slack_form" | "agent" | "api";
 };
@@ -72,13 +76,24 @@ export function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-export function hashChange(binding: { tenantId: string; requesterUserId: string; commitTool: string; resource: string; change: unknown }): string {
+export function hashChange(binding: {
+  tenantId: string;
+  requesterUserId: string;
+  commitTool: string;
+  resource: string;
+  change: unknown;
+}): string {
   return createHash("sha256").update(canonicalJson(binding)).digest("hex");
 }
 
 /** Minimal decision surface used by Slack approval buttons (in-memory or durable). */
 export interface ApprovalDecider {
-  decide(input: { requestId: string; approver: BoundIdentity; decision: "approve" | "reject"; presentedHash: string }): ApprovalRequest | Promise<ApprovalRequest>;
+  decide(input: {
+    requestId: string;
+    approver: BoundIdentity;
+    decision: "approve" | "reject";
+    presentedHash: string;
+  }): ApprovalRequest | Promise<ApprovalRequest>;
 }
 
 export type CommitExecutor = (req: Readonly<ApprovalRequest>) => Promise<unknown>;
@@ -90,11 +105,14 @@ export class ApprovalWorkflow implements ApprovalDecider {
   private readonly rotation = new Map<string, number>();
   private readonly rules: ApprovalPolicyRule[];
 
-  constructor(rules: readonly ApprovalPolicyRule[], readonly ttlMs = 15 * 60 * 1000, private readonly now: () => number = Date.now) {
+  constructor(
+    rules: readonly ApprovalPolicyRule[],
+    readonly ttlMs = 15 * 60 * 1000,
+    private readonly now: () => number = Date.now,
+  ) {
     this.rules = rules.map((r) => PolicyRuleSchema.parse(r));
     for (const r of this.rules) {
-      const entry = TOOL_REGISTRY.find((t) => t.name === r.commitTool);
-      if (!entry || entry.toolClass !== "write-commit") throw new Error(`Approval policy names non-commit tool ${r.commitTool}`);
+      if (!isCommitTool(r.commitTool)) throw new Error(`Approval policy names non-commit tool ${r.commitTool}`);
     }
   }
 
@@ -122,11 +140,18 @@ export class ApprovalWorkflow implements ApprovalDecider {
     summary: string;
     source: ApprovalRequest["source"];
   }): ApprovalRequest {
-    const entry = TOOL_REGISTRY.find((t) => t.name === input.commitTool);
-    if (!entry || entry.toolClass !== "write-commit") throw new ApprovalError("NOT_A_WRITE", "Only registered commit tools can be proposed.");
-    assertToolAllowedForUser({ userId: input.requester.userId, roles: input.authz.roles, toolName: input.commitTool, assignments: input.authz.assignments });
+    if (!isCommitTool(input.commitTool))
+      throw new ApprovalError("NOT_A_WRITE", "Only registered commit tools can be proposed.");
+    assertToolAllowedForUser({
+      userId: input.requester.userId,
+      roles: input.authz.roles,
+      toolName: input.commitTool,
+      assignments: input.authz.assignments,
+    });
     const rule = this.rule(input.requester.tenantId, input.commitTool);
-    let eligible = rule.allowSelfApproval ? rule.approverUserIds : rule.approverUserIds.filter((u) => u !== input.requester.userId);
+    let eligible = rule.allowSelfApproval
+      ? rule.approverUserIds
+      : rule.approverUserIds.filter((u) => u !== input.requester.userId);
     if (!eligible.length) throw new ApprovalError("NO_APPROVER", "No eligible approver other than the requester.");
     if (rule.rotate) {
       const k = `${rule.tenantId}:${rule.commitTool}`;
@@ -143,7 +168,13 @@ export class ApprovalWorkflow implements ApprovalDecider {
       commitTool: input.commitTool,
       resource: input.resource,
       change,
-      changeHash: hashChange({ tenantId: input.requester.tenantId, requesterUserId: input.requester.userId, commitTool: input.commitTool, resource: input.resource, change }),
+      changeHash: hashChange({
+        tenantId: input.requester.tenantId,
+        requesterUserId: input.requester.userId,
+        commitTool: input.commitTool,
+        resource: input.resource,
+        change,
+      }),
       summary: input.summary.slice(0, 500),
       status: "pending",
       createdAt: t,
@@ -173,13 +204,21 @@ export class ApprovalWorkflow implements ApprovalDecider {
   }
 
   /** Approver identity must come from verified channel identity (e.g. signed Slack interaction + identity map). */
-  decide(input: { requestId: string; approver: BoundIdentity; decision: "approve" | "reject"; presentedHash: string }): ApprovalRequest {
+  decide(input: {
+    requestId: string;
+    approver: BoundIdentity;
+    decision: "approve" | "reject";
+    presentedHash: string;
+  }): ApprovalRequest {
     const r = this.load(input.requestId);
-    if (r.tenantId !== input.approver.tenantId) throw new ApprovalError("CROSS_TENANT", "Approver is in another tenant.");
+    if (r.tenantId !== input.approver.tenantId)
+      throw new ApprovalError("CROSS_TENANT", "Approver is in another tenant.");
     if (r.status !== "pending") throw new ApprovalError("NOT_PENDING", `Request is ${r.status}.`);
-    if (input.presentedHash !== r.changeHash) throw new ApprovalError("HASH_MISMATCH", "Preview changed; approval refused.");
+    if (input.presentedHash !== r.changeHash)
+      throw new ApprovalError("HASH_MISMATCH", "Preview changed; approval refused.");
     const rule = this.rule(r.tenantId, r.commitTool);
-    if (input.approver.userId === r.requesterUserId && !rule.allowSelfApproval) throw new ApprovalError("SELF_APPROVAL", "Requester cannot approve their own change.");
+    if (input.approver.userId === r.requesterUserId && !rule.allowSelfApproval)
+      throw new ApprovalError("SELF_APPROVAL", "Requester cannot approve their own change.");
     if (!r.assignedApprovers.includes(input.approver.userId) || !rule.approverUserIds.includes(input.approver.userId)) {
       throw new ApprovalError("NOT_APPROVER", "Caller is not an authorized approver for this request.");
     }
@@ -190,8 +229,15 @@ export class ApprovalWorkflow implements ApprovalDecider {
   }
 
   /** Commit after approval. Rechecks everything; executor runs at most once per request. */
-  async commit(input: { requestId: string; caller: BoundIdentity; authz: RequesterAuthz; idempotencyKey: string; executor: CommitExecutor }): Promise<unknown> {
-    if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey)) throw new ApprovalError("BAD_IDEMPOTENCY_KEY", "idempotencyKey must be 8-128 url-safe chars.");
+  async commit(input: {
+    requestId: string;
+    caller: BoundIdentity;
+    authz: RequesterAuthz;
+    idempotencyKey: string;
+    executor: CommitExecutor;
+  }): Promise<unknown> {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey))
+      throw new ApprovalError("BAD_IDEMPOTENCY_KEY", "idempotencyKey must be 8-128 url-safe chars.");
     const idemKey = `${input.caller.tenantId}:${input.caller.userId}:${input.requestId}:${input.idempotencyKey}`;
     if (this.idem.has(idemKey)) return this.idem.get(idemKey);
     const r = this.load(input.requestId);
@@ -204,12 +250,23 @@ export class ApprovalWorkflow implements ApprovalDecider {
       r.status = "expired";
       throw new ApprovalError("EXPIRED", "Approval window expired.");
     }
-    const recomputed = hashChange({ tenantId: r.tenantId, requesterUserId: r.requesterUserId, commitTool: r.commitTool, resource: r.resource, change: r.change });
+    const recomputed = hashChange({
+      tenantId: r.tenantId,
+      requesterUserId: r.requesterUserId,
+      commitTool: r.commitTool,
+      resource: r.resource,
+      change: r.change,
+    });
     if (recomputed !== r.changeHash) {
       r.status = "failed";
       throw new ApprovalError("TAMPERED", "Stored change does not match approved hash.");
     }
-    assertToolAllowedForUser({ userId: r.requesterUserId, roles: input.authz.roles, toolName: r.commitTool, assignments: input.authz.assignments });
+    assertToolAllowedForUser({
+      userId: r.requesterUserId,
+      roles: input.authz.roles,
+      toolName: r.commitTool,
+      assignments: input.authz.assignments,
+    });
     r.status = "committing"; // synchronous claim before any await
     try {
       const result = await input.executor(structuredClone(r));

@@ -97,7 +97,10 @@ const NON_TRAVERSABLE = new Set(["child_page", "child_database", "link_to_page",
 
 type NotionBlock = { id: string; type: string; has_children?: boolean; [k: string]: unknown };
 
-export function createNotionHttpFetcher(fetchImpl: typeof fetch = fetch, limits = { maxDepth: 3, maxRequests: 25 }): NotionFetcher {
+export function createNotionHttpFetcher(
+  fetchImpl: typeof fetch = fetch,
+  limits = { maxDepth: 3, maxRequests: 25 },
+): NotionFetcher {
   return async (token, resourceId) => {
     const headers = { authorization: `Bearer ${token}`, "Notion-Version": NOTION_API_VERSION };
     let requests = 0;
@@ -108,16 +111,21 @@ export function createNotionHttpFetcher(fetchImpl: typeof fetch = fetch, limits 
       return (await res.json()) as Record<string, unknown>;
     };
     const page = await get(`pages/${resourceId}`);
-    if (page.object !== "page" || normalizeNotionId(String(page.id ?? "")) !== resourceId) throw new NotionAccessDeniedError("not_the_allowlisted_page");
+    const pageId = typeof page.id === "string" ? page.id : "";
+    if (page.object !== "page" || normalizeNotionId(pageId) !== resourceId)
+      throw new NotionAccessDeniedError("not_the_allowlisted_page");
     if (page.archived === true || page.in_trash === true) throw new NotionAccessDeniedError("page_archived");
     const lines: string[] = [];
     const walk = async (blockId: string, depth: number): Promise<void> => {
       let cursor: string | undefined;
       do {
-        const body = await get(`blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ""}`);
+        const body = await get(
+          `blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ""}`,
+        );
         for (const block of (body.results as NotionBlock[] | undefined) ?? []) {
           if (NON_TRAVERSABLE.has(block.type)) continue;
-          const content = block[block.type] as { rich_text?: Array<{ plain_text?: string }>; synced_from?: unknown } | undefined;
+          const content = block[block.type] as
+            { rich_text?: Array<{ plain_text?: string }>; synced_from?: unknown } | undefined;
           if (block.type === "synced_block" && content?.synced_from) continue;
           const text = content?.rich_text?.map((t) => t.plain_text ?? "").join("") ?? "";
           if (text) lines.push(`${"  ".repeat(depth)}${text}`);
@@ -142,7 +150,11 @@ export class NotionReader {
     private readonly delegated?: DelegatedNotionTokens,
   ) {}
 
-  async read(caller: BoundIdentity, roles: readonly Role[], resourceId: string): Promise<{ resourceId: string; label: string; text: string }> {
+  async read(
+    caller: BoundIdentity,
+    roles: readonly Role[],
+    resourceId: string,
+  ): Promise<{ resourceId: string; label: string; text: string }> {
     if (!this.config.enabled) throw new NotionAccessDeniedError("notion_disabled");
     const resource = this.policy.assertEntitled(caller, roles, resourceId);
     let token: string | undefined;

@@ -1,15 +1,33 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { z } from "zod";
 import type { OAuthTokens } from "./oauth.js";
 
-type StoredRecord = {
-  userId: string;
-  ciphertext: string;
-  iv: string;
-  tag: string;
-  updatedAt: string;
-};
+const StoredRecordSchema = z.object({
+  userId: z.string().min(1).max(256),
+  ciphertext: z.string().min(1).max(200_000),
+  iv: z.string().min(1).max(128),
+  tag: z.string().min(1).max(128),
+  updatedAt: z.string().max(40),
+});
+const StoredFileSchema = z.array(StoredRecordSchema).max(10_000);
+type StoredRecord = z.infer<typeof StoredRecordSchema>;
+
+const OAuthTokensSchema = z.object({
+  accessToken: z.string().min(1).max(8192),
+  refreshToken: z.string().min(1).max(8192).optional(),
+  expiresAt: z.number(),
+  tokenType: z.string().min(1).max(64),
+  scope: z.string().max(2048).optional(),
+});
+
+export class TokenStoreCorruptError extends Error {
+  constructor() {
+    super("Token store file is not valid.");
+    this.name = "TokenStoreCorruptError";
+  }
+}
 
 /**
  * File-backed encrypted token store (AES-256-GCM).
@@ -20,6 +38,7 @@ type StoredRecord = {
  */
 export class TokenStore {
   private readonly key: Buffer;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly path: string,
@@ -28,24 +47,40 @@ export class TokenStore {
     this.key = createHash("sha256").update(encryptionSecret).digest();
   }
 
+  /** Serialize read-modify-write in this process. The file write itself is a temp file plus rename. */
+  private lock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   async get(userId: string): Promise<OAuthTokens | undefined> {
-    const all = await this.readAll();
-    const record = all.find((r) => r.userId === userId);
-    if (!record) return undefined;
-    return this.decrypt(record);
+    return this.lock(async () => {
+      const all = await this.readAll();
+      const record = all.find((r) => r.userId === userId);
+      if (!record) return undefined;
+      return this.decrypt(record);
+    });
   }
 
   async set(userId: string, tokens: OAuthTokens): Promise<void> {
-    const all = await this.readAll();
-    const encrypted = this.encrypt(userId, tokens);
-    const next = all.filter((r) => r.userId !== userId);
-    next.push(encrypted);
-    await this.writeAll(next);
+    return this.lock(async () => {
+      const all = await this.readAll();
+      const encrypted = this.encrypt(userId, tokens);
+      const next = all.filter((r) => r.userId !== userId);
+      next.push(encrypted);
+      await this.writeAll(next);
+    });
   }
 
   async delete(userId: string): Promise<void> {
-    const all = await this.readAll();
-    await this.writeAll(all.filter((r) => r.userId !== userId));
+    return this.lock(async () => {
+      const all = await this.readAll();
+      await this.writeAll(all.filter((r) => r.userId !== userId));
+    });
   }
 
   /** Write to a temp file then rename, so a crash never leaves a truncated store. Owner-only. */
@@ -60,7 +95,9 @@ export class TokenStore {
   private async readAll(): Promise<StoredRecord[]> {
     try {
       const raw = await readFile(this.path, "utf8");
-      return JSON.parse(raw) as StoredRecord[];
+      const parsed = StoredFileSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) throw new TokenStoreCorruptError();
+      return parsed.data;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return [];
@@ -89,17 +126,12 @@ export class TokenStore {
   }
 
   private decrypt(record: StoredRecord): OAuthTokens {
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      this.key,
-      Buffer.from(record.iv, "base64"),
-    );
+    const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(record.iv, "base64"));
     decipher.setAAD(this.aad(record.userId));
     decipher.setAuthTag(Buffer.from(record.tag, "base64"));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(record.ciphertext, "base64")),
-      decipher.final(),
-    ]);
-    return JSON.parse(plaintext.toString("utf8")) as OAuthTokens;
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(record.ciphertext, "base64")), decipher.final()]);
+    const parsed = OAuthTokensSchema.safeParse(JSON.parse(plaintext.toString("utf8")));
+    if (!parsed.success) throw new TokenStoreCorruptError();
+    return parsed.data;
   }
 }

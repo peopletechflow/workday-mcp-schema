@@ -54,7 +54,11 @@ export class OrgScopeError extends Error {
 const SCOPES = new WeakSet<OrgScope>();
 const PROOFS = new WeakSet<WorkerOrgProof>();
 
-export async function verifyOrgScope(basis: OrgScopeBasis, adapter: OrgScopeAdapter, now: number = Date.now()): Promise<OrgScope> {
+export async function verifyOrgScope(
+  basis: OrgScopeBasis,
+  adapter: OrgScopeAdapter,
+  now: number = Date.now(),
+): Promise<OrgScope> {
   const self = await adapter.resolveSelf();
   if (!self.id || self.id === "me") throw new OrgScopeError("resolveSelf must return the caller's WID, not 'me'.");
   const orgIds = new Set<string>();
@@ -76,16 +80,39 @@ export async function verifyOrgScope(basis: OrgScopeBasis, adapter: OrgScopeAdap
     }
     frontier = next;
   }
-  const scope: OrgScope = Object.freeze({ basis, callerWid: self.id, orgIds, truncated, expiresAt: now + ORG_SCOPE_TTL_MS });
+  const scope: OrgScope = Object.freeze({
+    basis,
+    callerWid: self.id,
+    orgIds,
+    truncated,
+    expiresAt: now + ORG_SCOPE_TTL_MS,
+  });
   SCOPES.add(scope);
   return scope;
 }
 
-export function isValidOrgScope(scope: OrgScope | undefined, basis: OrgScopeBasis, callerWid?: string, now: number = Date.now()): scope is OrgScope {
-  return !!scope && SCOPES.has(scope) && scope.basis === basis && scope.expiresAt >= now && !!callerWid && scope.callerWid === callerWid;
+export function isValidOrgScope(
+  scope: OrgScope | undefined,
+  basis: OrgScopeBasis,
+  callerWid?: string,
+  now: number = Date.now(),
+): scope is OrgScope {
+  return (
+    !!scope &&
+    SCOPES.has(scope) &&
+    scope.basis === basis &&
+    scope.expiresAt >= now &&
+    !!callerWid &&
+    scope.callerWid === callerWid
+  );
 }
 
-export function isOrgInScope(scope: OrgScope | undefined, orgId: string | undefined, basis: OrgScopeBasis, callerWid?: string): boolean {
+export function isOrgInScope(
+  scope: OrgScope | undefined,
+  orgId: string | undefined,
+  basis: OrgScopeBasis,
+  callerWid?: string,
+): boolean {
   return !!orgId && isValidOrgScope(scope, basis, callerWid) && scope.orgIds.has(orgId);
 }
 
@@ -121,8 +148,14 @@ export function isWorkerInOrgScope(
   now: number = Date.now(),
 ): boolean {
   return (
-    !!proof && PROOFS.has(proof) && !!workerWid && proof.workerWid === workerWid && proof.basis === basis &&
-    !!callerWid && proof.callerWid === callerWid && proof.expiresAt >= now
+    !!proof &&
+    PROOFS.has(proof) &&
+    !!workerWid &&
+    proof.workerWid === workerWid &&
+    proof.basis === basis &&
+    !!callerWid &&
+    proof.callerWid === callerWid &&
+    proof.expiresAt >= now
   );
 }
 

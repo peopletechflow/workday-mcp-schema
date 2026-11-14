@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { IsoDateSchema, PageInfoSchema, PageInputShape, TimeOffEntryIdSchema, TimeOffUnitSchema, AbsenceTypeIdSchema } from "../common.js";
+import {
+  IsoDateSchema,
+  PageInfoSchema,
+  PageInputShape,
+  TimeOffEntryIdSchema,
+  TimeOffUnitSchema,
+  AbsenceTypeIdSchema,
+} from "../common.js";
 import { WorkerSummarySchema } from "../worker.js";
 import { TimeOffBalanceSchema, TimeOffRequestSchema, TimeOffRequestStatusSchema } from "../absence.js";
 import { CommitInputShape, commitOutput, defineTool, previewOutput } from "./contract.js";
@@ -65,7 +72,11 @@ export const previewRequestTimeOff = defineTool({
     startDate: IsoDateSchema.describe("First day of absence (ISO YYYY-MM-DD)"),
     endDate: IsoDateSchema.describe("Last day of absence (ISO YYYY-MM-DD)"),
     unit: TimeOffUnitSchema.describe("Unit for quantity (HOURS or DAYS)"),
-    quantity: z.number().positive().max(24 * 31).describe("Amount of time off in the given unit"),
+    quantity: z
+      .number()
+      .positive()
+      .max(24 * 31)
+      .describe("Amount of time off in the given unit"),
     timeOffType: AbsenceTypeIdSchema.describe("Workday time-off / absence type ID"),
     comment: z.string().max(500).optional().describe("Optional comment on the request"),
   },

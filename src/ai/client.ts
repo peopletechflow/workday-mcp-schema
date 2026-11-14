@@ -87,8 +87,8 @@ export async function generateEnterpriseText(
   const model = createEnterpriseModel(env);
   const result = await generateText({
     model,
-    system: args.system,
     prompt: args.prompt,
+    ...(args.system !== undefined ? { instructions: args.system } : {}),
   });
   return { text: result.text };
 }
