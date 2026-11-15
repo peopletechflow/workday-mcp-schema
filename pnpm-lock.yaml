@@ -43,8 +43,8 @@ importers:
         specifier: ^10.15.0
         version: 10.15.0
       gpt-tokenizer:
-        specifier: ^3.4.0
-        version: 3.4.0
+        specifier: ^4.1.2
+        version: 4.1.2
       prettier:
         specifier: ^3.10.1
         version: 3.10.1
@@ -695,8 +695,8 @@ packages:
     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
     engines: {node: '>= 0.4'}
 
-  gpt-tokenizer@3.4.0:
-    resolution: {integrity: sha512-wxFLnhIXTDjYebd9A9pGl3e31ZpSypbpIJSOswbgop5jLte/AsZVDvjlbEuVFlsqZixVKqbcoNmRlFDf6pz/UQ==}
+  gpt-tokenizer@4.1.2:
+    resolution: {integrity: sha512-5GwcLcZd6IqCdrGTTPcoKqbJk8cCWHHsoTHR/uQGZKT29CFcnJEg69qisGbKesQpzxRq9yQO4lBgsaZ8SawcGQ==}
 
   has-symbols@1.1.0:
     resolution: {integrity: sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==}
@@ -1777,7 +1777,7 @@ snapshots:
 
   gopd@1.2.0: {}
 
-  gpt-tokenizer@3.4.0: {}
+  gpt-tokenizer@4.1.2: {}
 
   has-symbols@1.1.0: {}
 
